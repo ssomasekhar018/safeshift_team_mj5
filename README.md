@@ -692,7 +692,7 @@ CREATE TABLE zone_risk_scores (
 | Item | Status | Link |
 |------|--------|------|
 | README.md in GitHub repo | ✅ Submitted | [https://github.com/ssomasekhar018/safeshift_team_mj5](https://github.com) |
-| 2-minute strategy video | ✅ Submitted | [Video link] |
+| 2-minute strategy video | ✅ Submitted | [https://drive.google.com/file/d/14caiuheXJxX-Qme1j0BKmaAhlhDH9Wna/view?usp=drivesdk] |
 | Figma prototype (Try It Out) | ✅ Live | [https://build-pixel-63412272.figma.site/] |
 | Adversarial Defense section | ✅ Included | See section above |
 | Market Crash compliance | ✅ Addressed | Immutable audit trail + IRDAI alignment |

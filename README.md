@@ -686,5 +686,17 @@ CREATE TABLE zone_risk_scores (
 ---
 
 ---
+ 
+## 📦 Phase 1 Submission Checklist
+ 
+| Item | Status | Link |
+|------|--------|------|
+| README.md in GitHub repo | ✅ Submitted | [https://github.com/ssomasekhar018/safeshift_team_mj5](https://github.com) |
+| 2-minute strategy video | ✅ Submitted | [Video link] |
+| Figma prototype (Try It Out) | ✅ Live | [https://build-pixel-63412272.figma.site/] |
+| Adversarial Defense section | ✅ Included | See section above |
+| Market Crash compliance | ✅ Addressed | Immutable audit trail + IRDAI alignment |
+ 
+---
 
 *Built for Guidewire DEVTrails 2026 · Team MJ5 · SRMAP University*

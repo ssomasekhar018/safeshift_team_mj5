@@ -281,21 +281,17 @@ At registration, the system immediately runs a zone risk lookup and shows the wo
 
 ## 🏗️ Tech Stack
 
-| Layer | Technology | Reason |
-|-------|-----------|--------|
-| Frontend | React PWA (Vite) + Tailwind CSS | No install; runs on budget Android |
-| Offline | Workbox service worker | Policy details available without data |
-| Backend | Node.js + Express | Fast to build; well-documented ecosystem |
-| Database | PostgreSQL (Supabase free tier) | Relational schema for policies/claims |
-| Cache | Redis | Active policy lookups; trigger state |
-| Job queue | BullMQ | Scheduled trigger polling every 5 min |
-| ML serving | Python FastAPI microservice | Isolated; independently deployable |
-| ML models | XGBoost + Scikit-learn Isolation Forest | Premium calc + fraud detection |
-| Weather | OpenWeatherMap API (free tier) | Rain + heat triggers |
-| AQI | AQICN API (free tier) | Pollution trigger |
-| Payments | Razorpay test mode | Simulated instant payout |
-| Hosting | Railway / Render (free tier) | Zero infrastructure cost |
-| CI/CD | GitHub Actions | Auto-deploy on every push |
+| Layer | Technology |
+|-------|------------|
+| **Frontend** | React 18, Vite, React Router, Recharts, Lucide Icons |
+| **Backend** | Node.js, Express.js, JWT, bcryptjs |
+| **Database** | SQLite via `better-sqlite3` (persistent, file-based — zero config) |
+| **Offline** | Workbox service worker — policy available without data |
+| **ML Service** | Python, Flask, XGBoost, Isolation Forest (DBSCAN) |
+| **Payments** | Razorpay UPI sandbox mode |
+| **Weather API** | OpenWeatherMap (rain + heat triggers) |
+| **AQI API** | AQICN / WAQI (air quality trigger) |
+| **CI/CD** | GitHub Actions — auto-deploy on push |
 
 ---
 
@@ -504,59 +500,81 @@ TRIGGER FIRES IN ZONE
 ### 📁 Repository Structure
 
 ```
-safeshift/
-├── client/                          # React PWA (Vite + Tailwind)
-│   ├── public/
-│   │   └── manifest.json            # PWA manifest — add to homescreen
-│   ├── src/
-│   │   ├── pages/
-│   │   │   ├── Onboarding.jsx       # Step 1–4 onboarding flow
-│   │   │   ├── Dashboard.jsx        # Worker main screen
-│   │   │   ├── Policy.jsx           # Weekly plan purchase
-│   │   │   ├── PayoutNotification.jsx
-│   │   │   └── Admin.jsx            # Insurer dashboard
-│   │   ├── components/
-│   │   │   ├── CoverageBanner.jsx
-│   │   │   ├── PayoutRow.jsx
-│   │   │   ├── PlanCard.jsx
-│   │   │   ├── ZoneBadge.jsx
-│   │   │   └── FraudQueue.jsx
-│   │   ├── hooks/
-│   │   │   └── usePolicyStatus.js
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   └── vite.config.js
+safeshift/                           # Root repo
+├── safeshift/                       # Main project directory
+│   │
+│   ├── frontend/                    # React PWA (Vite)
+│   │   ├── public/
+│   │   │   ├── manifest.json        # PWA manifest — add to homescreen
+│   │   │   └── sw.js                # Workbox service worker (offline support)
+│   │   ├── src/
+│   │   │   ├── pages/
+│   │   │   │   ├── Register.jsx     # New worker registration
+│   │   │   │   ├── Login.jsx        # OTP-based login
+│   │   │   │   ├── Onboarding.jsx   # Multi-step: zone + shift + UPI ID
+│   │   │   │   ├── WorkerDashboard.jsx  # Live coverage + payout feed
+│   │   │   │   ├── PolicyShop.jsx   # AI-priced Basic/Standard/Pro tiers
+│   │   │   │   ├── ClaimHistory.jsx # Claims log with trust score badges
+│   │   │   │   ├── PayoutNotification.jsx  # 90-second payout alert
+│   │   │   │   └── AdminDashboard.jsx  # Insurer: fraud queue + zone heatmap
+│   │   │   ├── components/
+│   │   │   │   ├── CoverageBanner.jsx
+│   │   │   │   ├── PayoutRow.jsx
+│   │   │   │   ├── PlanCard.jsx
+│   │   │   │   ├── ZoneBadge.jsx
+│   │   │   │   └── FraudQueue.jsx
+│   │   │   ├── hooks/
+│   │   │   │   └── usePolicyStatus.js   # Polling hook for live policy state
+│   │   │   ├── services/
+│   │   │   │   └── api.js           # Centralized Axios client
+│   │   │   ├── App.jsx
+│   │   │   ├── main.jsx
+│   │   │   └── index.css            # Global styles + design tokens
+│   │   ├── index.html
+│   │   ├── package.json
+│   │   └── vite.config.js
+│   │
+│   ├── server/                      # Node.js + Express API
+│   │   ├── routes/
+│   │   │   ├── auth.js              # Register, OTP login, device fingerprint
+│   │   │   ├── policies.js          # Create / renew / cancel policy
+│   │   │   ├── claims.js            # Trigger → fraud check → payout pipeline
+│   │   │   ├── triggers.js          # BullMQ job definitions + simulate endpoint
+│   │   │   └── admin.js             # Insurer analytics + fraud queue endpoints
+│   │   ├── services/
+│   │   │   ├── triggerMonitor.js    # Polls all 5 triggers every 5 min (8 zones)
+│   │   │   ├── fraudScorer.js       # 6-signal trust score calculator
+│   │   │   ├── ringDetector.js      # DBSCAN + enrollment surge + device fingerprint
+│   │   │   ├── payoutService.js     # Razorpay sandbox UPI payout integration
+│   │   │   └── retrainingScheduler.js  # Sunday 10PM ML model retraining job
+│   │   ├── middleware/
+│   │   │   └── auth.js              # JWT authentication middleware
+│   │   ├── db/
+│   │   │   ├── schema.sql           # Full PostgreSQL schema (6 tables)
+│   │   │   └── init.js              # DB initializer / migration runner
+│   │   ├── data/                    # SQLite local DB (dev/demo)
+│   │   │   └── safeshift.db         # SQLite database file
+│   │   ├── package.json
+│   │   └── server.js                # Express app entry point
+│   │
+│   ├── ml/                          # Python Flask ML microservice
+│   │   ├── models/
+│   │   │   ├── premium_model.pkl    # XGBoost — zone risk scoring (4.5KB)
+│   │   │   └── fraud_model.pkl      # Isolation Forest — anomaly detection (318KB)
+│   │   ├── train/
+│   │   │   ├── train_premium.py     # XGBoost training on zone + seasonal features
+│   │   │   └── train_fraud.py       # Isolation Forest unsupervised anomaly training
+│   │   ├── app.py                   # Flask endpoints: /score, /fraud-check
+│   │   └── requirements.txt
+│   │
+│   ├── .github/
+│   │   └── workflows/
+│   │       └── deploy.yml           # GitHub Actions CI/CD pipeline
+│   ├── package.json                 # Root-level scripts
+│   └── .env.example                 # All required env vars documented
 │
-├── server/                          # Node.js + Express API
-│   ├── routes/
-│   │   ├── auth.js                  # OTP login, eKYC
-│   │   ├── policies.js              # Create / renew / cancel policy
-│   │   ├── claims.js                # Trigger → fraud check → payout
-│   │   ├── triggers.js              # BullMQ job definitions
-│   │   └── admin.js                 # Insurer analytics endpoints
-│   ├── services/
-│   │   ├── triggerMonitor.js        # Polls OpenWeather + AQICN every 5 min
-│   │   ├── fraudScorer.js           # 6-signal trust score calculator
-│   │   ├── ringDetector.js          # DBSCAN + enrollment surge + fingerprint
-│   │   └── payoutService.js         # Razorpay sandbox integration
-│   ├── db/
-│   │   └── schema.sql               # Full PostgreSQL schema (see below)
-│   └── index.js
-│
-├── ml/                              # Python FastAPI ML microservice
-│   ├── models/
-│   │   ├── premium_model.pkl        # XGBoost — zone risk scoring
-│   │   └── fraud_model.pkl          # Isolation Forest — anomaly detection
-│   ├── train/
-│   │   ├── train_premium.py
-│   │   └── train_fraud.py
-│   ├── api.py                       # FastAPI endpoints: /score, /fraud-check
-│   └── requirements.txt
-│
-├── .github/
-│   └── workflows/
-│       └── deploy.yml               # GitHub Actions CI/CD
-├── .env.example
+├── .gitignore
+├── LICENSE
 └── README.md
 ```
 
@@ -651,13 +669,57 @@ CREATE TABLE zone_risk_scores (
 
 ---
 
-### Phase 2 (March 21 – April 4) — Build Core
-- [ ] Worker onboarding (eKYC + zone selection + active hours)
-- [ ] Weekly policy creation + AI premium calculation (XGBoost)
-- [ ] 3 live triggers: Rain, AQI, Heat (real APIs)
-- [ ] 6-signal fraud trust scorer (v1 implementation)
-- [ ] Claims management screen
-- [ ] Mock payout flow via Razorpay sandbox
+### Phase 2 (March 21 – April 4) — ✅ Core Build Complete
+
+#### 🖥️ Frontend (React PWA — Vite)
+- [x] **Worker Registration** (`Register.jsx`) — Phone + name + platform + zone + shift hours + UPI ID onboarding flow
+- [x] **Worker Login** (`Login.jsx`) — OTP-based authentication screen
+- [x] **Multi-step Onboarding** (`Onboarding.jsx`) — Zone selection, shift declaration, eKYC step
+- [x] **Worker Dashboard** (`WorkerDashboard.jsx`) — Live coverage status, weekly payout summary, recent payout history feed
+- [x] **Policy Shop** (`PolicyShop.jsx`) — AI-priced Basic / Standard / Pro tier cards with zone risk score display
+- [x] **Claim History** (`ClaimHistory.jsx`) — Full claims log with trust score badges and payout status
+- [x] **Payout Notification** (`PayoutNotification.jsx`) — Real-time 90-second payout alert screen
+- [x] **Admin Dashboard** (`AdminDashboard.jsx`) — Insurer panel: loss ratios, fraud queue, zone heatmap, event log
+- [x] **Reusable Components** — `CoverageBanner`, `PayoutRow`, `PlanCard`, `ZoneBadge`, `FraudQueue`
+- [x] **API Service Layer** (`services/api.js`) — Centralized Axios client for all backend endpoints
+- [x] **`usePolicyStatus` Hook** — Polling hook for live policy and coverage state
+
+#### ⚙️ Backend (Node.js + Express)
+- [x] **Auth Routes** (`routes/auth.js`) — Register, OTP login, device fingerprint capture, eKYC
+- [x] **Policy Routes** (`routes/policies.js`) — Create weekly policy, renew, cancel, fetch active policy
+- [x] **Claims Routes** (`routes/claims.js`) — Auto-claim pipeline: trigger → fraud check → payout initiation
+- [x] **Triggers Routes** (`routes/triggers.js`) — BullMQ job definitions + manual simulate endpoint
+- [x] **Admin Routes** (`routes/admin.js`) — Fraud queue management, zone analytics, insurer overview
+- [x] **Trigger Monitor Service** (`services/triggerMonitor.js`) — Polls **all 5 triggers** every 5 min across 8 zones:
+  - Rain via OpenWeatherMap API (≥15mm/hr threshold)
+  - Heat via OpenWeatherMap API (≥45°C feels-like)
+  - AQI via AQICN/WAQI API (≥400 threshold)
+  - Dark Store Closure (mock + simulation endpoint)
+  - Platform Shutdown (mock + admin-flagged)
+- [x] **6-Signal Fraud Scorer** (`services/fraudScorer.js`) — Full weighted trust score engine:
+  - GPS jitter analysis (zone boundary matching, ±radius check)
+  - Network type consistency (cell vs. Wi-Fi signal matching)
+  - Signal strength realism (dBm range analysis)
+  - Accelerometer / movement detection (GPS delta movement)
+  - Zone presence history (rolling 30-day check-in count)
+  - Platform delivery app activity (recent check-in timestamp)
+  - Ring pattern early detection hook (device hash)
+- [x] **Ring Detector Service** (`services/ringDetector.js`) — DBSCAN GPS clustering, device fingerprint reuse detection, enrollment surge monitoring
+- [x] **Payout Service** (`services/payoutService.js`) — Razorpay sandbox integration for simulated UPI payouts
+- [x] **ML Retraining Scheduler** (`services/retrainingScheduler.js`) — Sunday 10 PM automated model retraining job
+- [x] **Database Schema** (`db/schema.sql`) — Full PostgreSQL schema: workers, policies, trigger_events, claims, fraud_flags, zone_risk_scores
+
+#### 🤖 ML Microservice (Python / Flask)
+- [x] **XGBoost Premium Model** — Trained and serialized (`models/premium_model.pkl`, 4.5KB)
+- [x] **Isolation Forest Fraud Model** — Trained and serialized (`models/fraud_model.pkl`, 318KB)
+- [x] **Premium Training Script** (`train/train_premium.py`) — XGBoost training on zone risk + seasonal + historical features
+- [x] **Fraud Training Script** (`train/train_fraud.py`) — Isolation Forest unsupervised anomaly training on 6-signal feature set
+- [x] **ML API** (`app.py`) — Flask endpoints: `/score` (premium calculation) and `/fraud-check` (anomaly scoring)
+
+#### 🔄 DevOps & CI/CD
+- [x] **GitHub Actions Pipeline** (`.github/workflows/deploy.yml`) — Auto-deploy on push to main
+- [x] **`.env.example`** — All environment variables documented (OpenWeather, AQICN, Razorpay, DB, Redis)
+- [x] **`.gitignore`** — Properly excludes `node_modules`, `.env`, `.pkl` model files, logs
 
 ### Phase 3 (April 5–17) — Scale & Polish
 - [ ] Full Isolation Forest fraud anomaly detection
@@ -686,6 +748,231 @@ CREATE TABLE zone_risk_scores (
 ---
 
 ---
+
+## 🚀 Quick Start Guide
+
+### Prerequisites
+
+- **Node.js** ≥ 18
+- **Python** ≥ 3.9 *(optional — only needed for ML microservice)*
+- ⚡ **No database installation required** — SQLite runs out of the box
+
+### Step 1 — Install Dependencies
+
+```bash
+# Install server dependencies
+cd safeshift/server
+npm install
+
+# Install frontend dependencies
+cd ../frontend
+npm install
+```
+
+### Step 2 — Start the Backend Server
+
+```bash
+cd safeshift/server
+npm run dev
+```
+✅ Server runs at **http://localhost:4000**
+✅ SQLite database auto-created at `server/data/safeshift.db`
+✅ Demo data (worker + admin + policies + claims) seeded automatically
+
+### Step 3 — Start the Frontend
+
+```bash
+cd safeshift/frontend
+npm run dev
+```
+✅ Frontend runs at **http://localhost:5173**
+
+### Step 4 — *(Optional)* Start the ML Service
+
+```bash
+cd safeshift/ml
+pip install -r requirements.txt
+python app.py
+```
+✅ ML service runs at **http://localhost:8000**
+> The app works without the ML service — it falls back to rule-based pricing.
+
+---
+
+## 🔑 Demo Credentials
+
+| Role | Phone Number | Password | What You'll See |
+|------|-------------|----------|-----------------|
+| **Worker** | `9876543210` | `demo123` | Worker dashboard, policy shop, claim history, payouts |
+| **Admin** | `9999999999` | `admin123` | Insurer dashboard, KPIs, fraud queue, zone analytics |
+
+> 💡 Click the **"Demo Worker"** or **"Demo Admin"** buttons on the login page to auto-fill credentials.
+
+---
+
+## 🔧 API Reference
+
+### 🔐 Authentication
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/auth/login` | Worker login with phone + password |
+| `POST` | `/api/auth/admin/login` | Admin login with phone + password |
+| `POST` | `/api/auth/register` | Register new worker account |
+| `GET`  | `/api/auth/me` | Get current user profile |
+| `POST` | `/api/auth/ekyc` | Aadhaar eKYC verification (mock) |
+
+### 📋 Policies
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET`  | `/api/policies/quote` | Get AI-driven premium quote for zone |
+| `POST` | `/api/policies/create` | Purchase a weekly policy |
+| `GET`  | `/api/policies/active` | Get worker's current active policy |
+| `GET`  | `/api/policies/history` | Get worker's policy history |
+| `POST` | `/api/policies/:id/cancel` | Cancel an active policy |
+
+### 📑 Claims
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/claims/process` | Process claims for a trigger event |
+| `GET`  | `/api/claims/my` | Get worker's claim history |
+| `GET`  | `/api/claims/all` | Admin: get all claims (filterable) |
+| `POST` | `/api/claims/:id/review` | Admin: approve or reject a claim |
+| `POST` | `/api/claims/:id/recheck` | Re-evaluate a soft-held claim |
+
+### 🌦️ Triggers
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET`  | `/api/triggers/zones` | Get all zones with risk levels |
+| `POST` | `/api/triggers/simulate` | Simulate a trigger event (demo) |
+| `POST` | `/api/triggers/checkin` | Worker GPS check-in |
+
+### 📊 Admin Dashboard
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET`  | `/api/admin/dashboard` | KPI metrics (premiums, payouts, loss ratio) |
+| `GET`  | `/api/admin/loss-ratio` | Weekly loss ratio trend data |
+| `GET`  | `/api/admin/fraud-queue` | Claims pending fraud review |
+| `GET`  | `/api/admin/zone-analytics` | Zone-level risk & claims analytics |
+
+---
+
+## 💾 Database Design
+
+SafeShift uses **SQLite** via `better-sqlite3` for persistent storage.
+
+**Why SQLite?**
+- ✅ Zero configuration — no server to install
+- ✅ Single file — `server/data/safeshift.db`
+- ✅ Auto-initialized on first run with schema + demo data
+- ✅ Data persists across server restarts
+
+### Schema Overview
+
+| Table | Purpose | Key Columns |
+|-------|---------|-------------|
+| `workers` | Worker profiles | phone, password_hash, name, platform, zone_id, upi_id |
+| `admins` | Admin accounts | phone, password_hash, name |
+| `policies` | Weekly insurance policies | worker_id, tier, premium_inr, coverage_inr, status |
+| `claims` | Parametric claim records | worker_id, trigger_id, trust_score, status, payout_inr |
+| `trigger_events` | Weather/hazard trigger events | zone_id, trigger_type, threshold_value |
+| `fraud_flags` | Fraud detection flags | claim_id, flag_type, flag_detail, resolved |
+| `zone_risk_scores` | ML-computed zone risk data | zone_id, risk_score, premium tiers |
+
+---
+
+## 🔐 Authentication & Security
+
+| Feature | Implementation |
+|---------|---------------|
+| **Password Hashing** | bcryptjs with 10 salt rounds |
+| **Token System** | JWT with 7-day expiry |
+| **Role-Based Access** | Worker and Admin roles |
+| **Route Protection** | Bearer token middleware on all protected routes |
+| **Duplicate Prevention** | Unique phone constraint prevents duplicate accounts |
+
+### Auth Flow
+
+```
+Worker/Admin opens app
+        │
+        ▼
+  Enter Phone + Password
+        │
+        ▼
+  Server validates credentials (bcrypt compare)
+        │
+        ├── ✅ Valid → Issue JWT token → Redirect to Dashboard
+        │
+        └── ❌ Invalid → Show error message
+```
+
+---
+
+## 🤖 ML & AI Components
+
+### Risk Scoring Engine
+- **Algorithm:** XGBoost (Gradient Boosting)
+- **Features:** Zone base risk, season, claims history, zone density, infrastructure score, forecast severity
+- **Output:** Risk score (0–100) → dynamic premium tier (Basic / Standard / Pro)
+- **Retraining:** Every Sunday at 10 PM before new policy cycle
+
+### 6-Signal Trust Engine
+
+| Signal | Weight | What It Checks |
+|--------|--------|----------------|
+| GPS Jitter | 20% | Location consistency — natural vs. spoofed drift |
+| Network Match | 15% | Cell tower type matches expected storm conditions |
+| Signal Strength | 15% | dBm range consistent with outdoor/storm environment |
+| Accelerometer | 15% | Movement patterns (riding vs. suspiciously stationary) |
+| Zone History | 20% | 30-day confirmed GPS check-ins in this zone |
+| Platform Active | 15% | Delivery app was open and active during shift |
+
+### Fraud Detection
+- **Isolation Forest:** Unsupervised anomaly detection — no labelled fraud examples needed
+- **Ring Detection:** DBSCAN clustering to find coordinated claim groups
+- **Device Sharing:** Multiple workers using same device hash flagged and silently linked
+- **Enrollment Surge:** 3× spike in zone registrations in 48h before a forecast event → elevated-risk flag
+- **Flash Mob Pattern:** Claim arrival rate > 3× zone baseline in under 2 min → Ring Alert Mode
+
+---
+
+## 📱 User Flows
+
+### Worker Flow
+```
+Register → Login → View Dashboard → Buy Policy → Trigger Occurs →
+Auto Claim → Trust Score Check → UPI Payout (< 90 sec)
+```
+
+### Admin Flow
+```
+Login → View KPIs → Monitor Loss Ratio → Review Fraud Queue →
+Approve/Reject Flagged Claims → Analyze Zone Risk
+```
+
+### Claim Pipeline
+```
+Trigger Event (Rain / AQI / Heat / Closure / Shutdown)
+        │
+        ▼
+Find Active Policies in Affected Zone
+        │
+        ▼
+Run 6-Signal Trust Scoring (< 15 sec per claim)
+        │
+        ├── Score ≥ 70 → ✅ Auto-Approve → UPI Payout (< 90 sec)
+        ├── Score 40–69 → ⏸️ Soft Hold → Silent re-check every 5 min
+        └── Score < 40  → 🚩 Flagged → Admin Review Queue
+```
+
+---
+
+---
  
 ## 📦 Phase 1 Submission Checklist
  
@@ -697,6 +984,30 @@ CREATE TABLE zone_risk_scores (
 | Adversarial Defense section | ✅ Included | See section above |
 | Market Crash compliance | ✅ Addressed | Immutable audit trail + IRDAI alignment |
  
+---
+
+## 📦 Phase 2 Submission Checklist
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Worker Registration & OTP Login | ✅ Complete | `Register.jsx` + `Login.jsx` + `routes/auth.js` |
+| Multi-step Onboarding (eKYC + zone + shift) | ✅ Complete | `Onboarding.jsx` — zone selection, shift hours, UPI ID |
+| Worker Dashboard (live coverage + payouts) | ✅ Complete | `WorkerDashboard.jsx` — real-time policy + payout feed |
+| Policy Shop with AI-priced tiers | ✅ Complete | `PolicyShop.jsx` — Basic/Standard/Pro with zone risk score |
+| Claim History screen | ✅ Complete | `ClaimHistory.jsx` — trust score badges + payout status |
+| Payout Notification screen | ✅ Complete | `PayoutNotification.jsx` — 90-second alert flow |
+| Admin / Insurer Dashboard | ✅ Complete | `AdminDashboard.jsx` — fraud queue, zone heatmap, loss ratios |
+| All 5 Parametric Triggers (Rain, AQI, Heat, Closure, Shutdown) | ✅ Complete | `services/triggerMonitor.js` — polls every 5 min across 8 zones |
+| 6-Signal Fraud Trust Scorer | ✅ Complete | `services/fraudScorer.js` — GPS, network, signal, accel, zone history, platform active |
+| Ring Detector (DBSCAN + device fingerprint + enrollment surge) | ✅ Complete | `services/ringDetector.js` |
+| Razorpay Sandbox Payout Flow | ✅ Complete | `services/payoutService.js` — simulated UPI credits |
+| XGBoost Premium Model (trained + serialized) | ✅ Complete | `ml/models/premium_model.pkl` |
+| Isolation Forest Fraud Model (trained + serialized) | ✅ Complete | `ml/models/fraud_model.pkl` |
+| ML Flask API (`/score` + `/fraud-check`) | ✅ Complete | `ml/app.py` |
+| Full PostgreSQL Schema | ✅ Complete | `server/db/schema.sql` — 6 tables with audit trail |
+| GitHub Actions CI/CD Pipeline | ✅ Complete | `.github/workflows/deploy.yml` |
+| GitHub Repo | ✅ Live | [github.com/ssomasekhar018/safeshift_team_mj5](https://github.com/ssomasekhar018/safeshift_team_mj5) |
+
 ---
 
 *Built for Guidewire DEVTrails 2026 · Team MJ5 · SRMAP University*

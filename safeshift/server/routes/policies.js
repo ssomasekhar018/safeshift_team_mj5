@@ -177,19 +177,22 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
 // ─── Helper Functions ─────────────────────────────────────────────────────────
 
 function calculateDynamicPremiums(riskScore) {
+  const multiplier = 0.8 + (riskScore / 100) * 1.7; // 0.8–2.5 range
+  const seasonFactor = getSeasonFactor();
+
   return {
     basic: {
-      premium: 29,
+      premium: Math.round(29 * multiplier * seasonFactor),
       coverage: 500,
       per_event: Math.round(500 / 3),
     },
     standard: {
-      premium: 49,
+      premium: Math.round(49 * multiplier * seasonFactor),
       coverage: 900,
       per_event: Math.round(900 / 3),
     },
     pro: {
-      premium: 79,
+      premium: Math.round(79 * multiplier * seasonFactor),
       coverage: 1500,
       per_event: Math.round(1500 / 3),
     },

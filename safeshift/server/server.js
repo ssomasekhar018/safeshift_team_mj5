@@ -7,7 +7,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const path = require('path');
+
 const { initDB } = require('./db/init');
 const TriggerMonitor = require('./services/triggerMonitor');
 const RetrainingScheduler = require('./services/retrainingScheduler');
@@ -48,17 +48,9 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// ─── Serve Frontend (production) ─────────────────────────────────────────────
-const frontendPath = path.join(__dirname, '..', 'frontend', 'dist');
-app.use(express.static(frontendPath));
-app.get('*', (req, res) => {
-  if (!req.path.startsWith('/api')) {
-    res.sendFile(path.join(frontendPath, 'index.html'), (err) => {
-      if (err) {
-        res.status(200).json({ message: 'SafeShift API is running. Frontend at http://localhost:5173' });
-      }
-    });
-  }
+// ─── 404 Fallback (API only — frontend is on Vercel) ────────────────────────
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found', path: req.path });
 });
 
 // ─── Error Handler ───────────────────────────────────────────────────────────

@@ -990,6 +990,8 @@ Run 6-Signal Trust Scoring (< 15 sec per claim)
 
 | Item | Status | Notes |
 |------|--------|-------|
+| Try It Out Link (Live Demo) | ✅ Live | [https://safeshift-team-mj5.vercel.app/](https://safeshift-team-mj5.vercel.app/) |
+| Demo Video | ✅ Submitted | [Google Drive Link](https://drive.google.com/file/d/1zz-yuvQiXDUXV6Kw7jli5TPDJxtmQy0Z/view?usp=sharing) |
 | Worker Registration & OTP Login | ✅ Complete | `Register.jsx` + `Login.jsx` + `routes/auth.js` |
 | Multi-step Onboarding (eKYC + zone + shift) | ✅ Complete | `Onboarding.jsx` — zone selection, shift hours, UPI ID |
 | Worker Dashboard (live coverage + payouts) | ✅ Complete | `WorkerDashboard.jsx` — real-time policy + payout feed |

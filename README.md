@@ -16,7 +16,7 @@ SafeShift is a zero-touch parametric insurance platform for Q-commerce delivery 
 | Deliverable | Link | Status |
 |-------------|------|--------|
 | 🎯 **Pitch Deck** | [View Pitch Deck (Google Drive)](https://drive.google.com/file/d/1dl_FZZ7EQZP7U_ZqQ-YhfoqTnfaXuVk4/view?usp=drive_link) | ✅ Submitted |
-| 🎬 **Demo Video** | [Watch Demo Video (Google Drive)](https://drive.google.com/file/d/1zz-yuvQiXDUXV6Kw7jli5TPDJxtmQy0Z/view?usp=sharing) | ✅ Submitted |
+| 🎬 **Demo Video** | [Watch Demo Video (Google Drive)]([https://drive.google.com/file/d/1zz-yuvQiXDUXV6Kw7jli5TPDJxtmQy0Z/view?usp=sharing](https://drive.google.com/file/d/1YdSkf9115GSdto_mP--PrSb1HIsv1VAx/view?usp=sharing)) | ✅ Submitted |
 | 🌐 **Live App** | [safeshift-team-mj5.vercel.app](https://safeshift-team-mj5.vercel.app) | ✅ Live |
 | ⚙️ **Backend API** | [safeshift-team-mj5.onrender.com](https://safeshift-team-mj5.onrender.com) | ✅ Live |
 

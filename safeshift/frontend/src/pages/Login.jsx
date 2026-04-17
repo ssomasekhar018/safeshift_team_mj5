@@ -302,21 +302,21 @@ export default function Login({ onLogin }) {
                 className="absolute right-0 top-0 bottom-0 flex items-center justify-center"
                 style={{ width: '44px', zIndex: 30 }}
               >
-                <AnimatedButton
+                <button
                   type="button"
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     setShowPassword(!showPassword);
                   }}
-                  className="flex items-center justify-center p-2 rounded-lg hover:bg-white/5 transition-colors"
+                  className="flex items-center justify-center p-2 rounded-lg hover:bg-white/10 transition-colors focus:outline-none"
                   style={{
                     background: 'none',
                     border: 'none',
                     color: 'var(--text-muted)',
                     cursor: 'pointer',
-                    width: '32px',
-                    height: '32px',
+                    width: '36px',
+                    height: '36px',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -324,8 +324,8 @@ export default function Login({ onLogin }) {
                   }}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
-                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                </AnimatedButton>
+                  {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                </button>
               </div>
             </div>
           </motion.div>

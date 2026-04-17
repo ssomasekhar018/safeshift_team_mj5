@@ -496,29 +496,29 @@ export default function Register() {
                     className="absolute right-0 top-0 bottom-0 flex items-center justify-center"
                     style={{ width: '44px', zIndex: 30 }}
                   >
-                    <AnimatedButton 
+                    <button 
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
                         setShowPassword(v => !v);
                       }}
-                      className="flex items-center justify-center p-2 rounded-lg hover:bg-white/5 transition-colors"
+                      className="flex items-center justify-center p-2 rounded-lg hover:bg-white/10 transition-colors focus:outline-none"
                       style={{
                         background: 'none',
                         border: 'none',
                         color: 'var(--text-muted)',
                         cursor: 'pointer',
-                        width: '32px',
-                        height: '32px',
+                        width: '36px',
+                        height: '36px',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         padding: 0,
                       }}
                     >
-                      {showPassword ? <EyeOff size={16}/> : <Eye size={16}/>}
-                    </AnimatedButton>
+                      {showPassword ? <EyeOff size={18}/> : <Eye size={18}/>}
+                    </button>
                   </div>
                 </div>
 
@@ -609,29 +609,29 @@ export default function Register() {
                     className="absolute right-0 top-0 bottom-0 flex items-center justify-center"
                     style={{ width: '44px', zIndex: 30 }}
                   >
-                    <AnimatedButton 
+                    <button 
                       type="button"
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
                         setShowConfirm(v => !v);
                       }}
-                      className="flex items-center justify-center p-2 rounded-lg hover:bg-white/5 transition-colors"
+                      className="flex items-center justify-center p-2 rounded-lg hover:bg-white/10 transition-colors focus:outline-none"
                       style={{
                         background: 'none',
                         border: 'none',
                         color: 'var(--text-muted)',
                         cursor: 'pointer',
-                        width: '32px',
-                        height: '32px',
+                        width: '36px',
+                        height: '36px',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
                         padding: 0,
                       }}
                     >
-                      {showConfirm ? <EyeOff size={16}/> : <Eye size={16}/>}
-                    </AnimatedButton>
+                      {showConfirm ? <EyeOff size={18}/> : <Eye size={18}/>}
+                    </button>
                   </div>
                 </div>
               </Field>

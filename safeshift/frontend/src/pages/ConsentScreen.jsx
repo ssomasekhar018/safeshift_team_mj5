@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Shield, MapPin, CreditCard, Activity, CheckCircle, AlertTriangle } from 'lucide-react';
 import { useGlassmorphism } from '../hooks/useGlassmorphism';
+import { api } from '../services/api';
 
 export default function ConsentScreen({ onConsentGiven, user }) {
   const { getGlassClass } = useGlassmorphism();
@@ -55,21 +56,10 @@ export default function ConsentScreen({ onConsentGiven, user }) {
     setLoading(true);
     try {
       // Store consent in backend
-      const response = await fetch('/api/auth/consent', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('safeshift_token')}`,
-        },
-        body: JSON.stringify({
-          consents,
-          timestamp: new Date().toISOString(),
-        }),
+      await api.post('/auth/consent', {
+        consents,
+        timestamp: new Date().toISOString(),
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to save consent');
-      }
 
       onConsentGiven();
       // Navigate to dashboard after state update

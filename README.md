@@ -31,7 +31,7 @@ SafeShift is a zero-touch parametric insurance platform for Q-commerce delivery 
                          ▼
           ┌──────────────────────────────┐
           │        Core Database         │
-          │  PostgreSQL · Redis · BullMQ │
+          │  MongoDB · Redis · BullMQ    │
           └──────────────┬───────────────┘
                          │
           ┌──────────────┼──────────────┐
@@ -283,7 +283,9 @@ At registration, the system immediately runs a zone risk lookup and shows the wo
 
 | Layer | Technology |
 |-------|------------|
-| **Frontend** | React 18, Vite, React Router, Recharts, Lucide Icons |
+| **Frontend** | React 18, Vite, React Router, Recharts, Lucide Icons, Framer Motion, Three.js |
+| **Styling** | Tailwind CSS v3, Custom CSS Variables, Glassmorphism Design System |
+| **Frontend Architecture** | PWA (Workbox), ThemeContext, Custom Hooks, AnimatedWrapper |
 | **Backend** | Node.js, Express.js, JWT, bcryptjs |
 | **Database** | SQLite via `better-sqlite3` (persistent, file-based — zero config) |
 | **Offline** | Workbox service worker — policy available without data |
@@ -295,7 +297,7 @@ At registration, the system immediately runs a zone risk lookup and shows the wo
 
 ---
 
-## 📱 Platform Decision: Mobile-First PWA
+## 📱 Platform Decision: Mobile-First PWA + Dual Portal Architecture
 
 **Why PWA over native Android:**
 1. Budget Android phones (2–4GB RAM) resist installing new apps
@@ -305,6 +307,13 @@ At registration, the system immediately runs a zone risk lookup and shows the wo
 
 **Why hybrid (PWA for workers, full web for admin):**
 The admin fraud review queue and insurer analytics dashboard need desktop screen real estate. The worker flow is 4 screens maximum. A single responsive codebase serves both without maintaining two separate apps.
+
+**Why dual-portal with distinct UX modes:**
+The **Worker Portal** uses a strict PWA (Progressive Web App) model — no scrolling, no hover effects, no tap animations. Every animation that looks pretty on a desktop browser causes jank, mis-taps, and confusion on a budget Android phone held in wet hands during a rainstorm. Workers get a fixed, app-like experience that is rock-solid on low-end devices.
+
+The **Admin Portal** uses the full web experience — smooth hover effects, scrollable analytics, animated charts, and rich interactive widgets designed for a desktop insurer monitoring the portfolio.
+
+The same React component library (AnimatedWrapper) adapts its behavior automatically based on the active portal mode — detected via the `.pwa-mode` CSS class on the `<body>` element, propagated reactively through a `useIsPWA()` hook using MutationObserver.
 
 ---
 
@@ -509,27 +518,46 @@ safeshift/                           # Root repo
 │   │   │   └── sw.js                # Workbox service worker (offline support)
 │   │   ├── src/
 │   │   │   ├── pages/
-│   │   │   │   ├── Register.jsx     # New worker registration
-│   │   │   │   ├── Login.jsx        # OTP-based login
+│   │   │   │   ├── Register.jsx     # New worker registration + PWA mode enforced
+│   │   │   │   ├── Login.jsx        # OTP-based login + Worker/Admin portal switch
 │   │   │   │   ├── Onboarding.jsx   # Multi-step: zone + shift + UPI ID
-│   │   │   │   ├── WorkerDashboard.jsx  # Live coverage + payout feed
+│   │   │   │   ├── WorkerDashboard.jsx  # Live coverage + payout feed + storytelling overlay
 │   │   │   │   ├── PolicyShop.jsx   # AI-priced Basic/Standard/Pro tiers
 │   │   │   │   ├── ClaimHistory.jsx # Claims log with trust score badges
 │   │   │   │   ├── PayoutNotification.jsx  # 90-second payout alert
-│   │   │   │   └── AdminDashboard.jsx  # Insurer: fraud queue + zone heatmap
+│   │   │   │   ├── ConsentScreen.jsx # GDPR-style consent capture
+│   │   │   │   ├── Profile.jsx      # Worker profile + logout
+│   │   │   │   └── AdminDashboard.jsx  # Insurer: fraud queue + zone heatmap + recharts
 │   │   │   ├── components/
-│   │   │   │   ├── CoverageBanner.jsx
-│   │   │   │   ├── PayoutRow.jsx
-│   │   │   │   ├── PlanCard.jsx
-│   │   │   │   ├── ZoneBadge.jsx
-│   │   │   │   └── FraudQueue.jsx
+│   │   │   │   ├── AppShell.jsx          # PWA shell: PageHeader + BottomTabBar; enforces no-scroll for workers
+│   │   │   │   ├── AnimatedWrapper.jsx   # Framer-motion wrappers; PWA-aware via useIsPWA() hook
+│   │   │   │   ├── ThreeBackground.jsx   # Three.js particle mesh on auth pages; disabled in PWA
+│   │   │   │   ├── ThemeToggle.jsx      # Dark/light theme switch persisted to localStorage
+│   │   │   │   ├── ZoneHeatmap.jsx      # Color-coded zone risk grid + Recharts integration
+│   │   │   │   ├── PlanCard.jsx         # Tier pricing card with animated CTA
+│   │   │   │   ├── FraudQueue.jsx       # Admin: sortable fraud claim table
+│   │   │   │   ├── PayoutRow.jsx        # Single payout history row
+│   │   │   │   ├── ZoneBadge.jsx        # Zone risk level badge
+│   │   │   │   └── EnhancedGlassDemo.jsx # Dev/test glassmorphism showcase
+│   │   │   ├── context/
+│   │   │   │   └── ThemeContext.jsx      # Global dark/light theme provider
 │   │   │   ├── hooks/
-│   │   │   │   └── usePolicyStatus.js   # Polling hook for live policy state
+│   │   │   │   ├── useGlassmorphism.js  # Glass class + style generator; performance-aware
+│   │   │   │   ├── usePolicyStatus.js    # Polling hook for live policy state
+│   │   │   │   └── useConfig.js          # App configuration hook
 │   │   │   ├── services/
-│   │   │   │   └── api.js           # Centralized Axios client
-│   │   │   ├── App.jsx
+│   │   │   │   └── api.js           # Axios client: JWT interceptors, role-aware auth
+│   │   │   ├── utils/
+│   │   │   │   ├── animations.js     # Framer-motion variants: page, card, stagger, modal
+│   │   │   │   ├── glassmorphismCompat.js  # Backdrop-filter support detection
+│   │   │   │   ├── performanceMonitor.js    # FPS watchdog → auto-degrade glass effects
+│   │   │   │   └── themeEnhancer.js        # Dynamic CSS variable bindings for Tailwind
+│   │   │   ├── styles/
+│   │   │   │   ├── glassmorphism.css  # Full glassmorphism design system (1274 lines)
+│   │   │   │   └── README.md          # Design system documentation
+│   │   │   ├── App.jsx               # Router: worker routes in AppShell; admin standalone
 │   │   │   ├── main.jsx
-│   │   │   └── index.css            # Global styles + design tokens
+│   │   │   └── index.css             # Design tokens, PWA mode CSS, scroll locks, native icon hiding
 │   │   ├── index.html
 │   │   ├── package.json
 │   │   └── vite.config.js
@@ -722,14 +750,54 @@ CREATE TABLE zone_risk_scores (
 - [x] **`.gitignore`** — Properly excludes `node_modules`, `.env`, `.pkl` model files, logs
 
 ### Phase 3 (April 5–17) — Scale & Polish
-- [ ] Full Isolation Forest fraud anomaly detection
-- [ ] Ring detection (DBSCAN + enrollment surge + device fingerprint)
-- [ ] All 5 parametric triggers live
-- [ ] Worker dashboard with zone risk heatmap
-- [ ] Admin/insurer analytics panel
-- [ ] Mass Disruption Mode
-- [ ] 5-minute demo video (simulated rain event → 90-second payout)
-- [ ] Final pitch deck (PDF)
+
+#### ✅ Frontend Phase-3 Enhancements
+
+**Dual-Portal Architecture (PWA Worker + Web Admin)**
+- [x] **`.pwa-mode` CSS System** — Strict PWA lock in `index.css`: `overflow: hidden`, `touch-action: none`, `height: 100vh / -webkit-fill-available`, scrollbar suppression, and `user-select: none` on all elements except inputs
+- [x] **`useIsPWA()` Reactive Hook** (`components/AnimatedWrapper.jsx`) — Uses `MutationObserver` on `document.body` to watch for `.pwa-mode` class changes and broadcast portal-mode state reactively to all animated components
+- [x] **AnimatedWrapper — PWA-Aware Components** — All wrapped components (`AnimatedPage`, `AnimatedCard`, `AnimatedButton`, `AnimatedListItem`, `AnimatedIcon`) automatically disable `whileHover` and `whileTap` framer-motion animations when `isPWA === true`
+- [x] **AppShell Scroll Lock** (`components/AppShell.jsx`) — Worker portal `main` element uses `overflow-hidden` (no scrolling); Admin portal uses `overflow-y-auto` (full scrolling)
+- [x] **Login Portal Switch** (`pages/Login.jsx`) — `useEffect` toggles `.pwa-mode` on `<body>` as user switches between Worker/Admin segmented control, changing the entire page's UX mode before login
+- [x] **Register PWA Enforcement** (`pages/Register.jsx`) — `useEffect` unconditionally adds `.pwa-mode` on mount (Register is worker-only)
+- [x] **Admin Dashboard — Full Web Experience** — All admin cards, charts, fraud queue rows, and tab navigation use standard browser scroll and hover behaviors
+
+**UI Polish & Accessibility**
+- [x] **Framer Motion Animations** — `AnimatedPage`, `AnimatedCard`, `AnimatedButton`, `AnimatedText`, `AnimatedList`, `AnimatedListItem` — orchestrate entrance animations, stagger delays, and scroll-triggered reveals across all pages
+- [x] **Three.js 3D Background** — `ThreeBackground.jsx` renders an animated particle/shield mesh on the login/register/auth pages for visual brand differentiation; automatically disabled for PWA mode for performance
+- [x] **Glassmorphism Design System** (`styles/glassmorphism.css`) — Comprehensive CSS variable system for frosted-glass UI effects with full dark/light theme adaptation, browser compatibility detection, and performance degradation fallbacks
+- [x] **ThemeContext** (`context/ThemeContext.jsx`) — Global dark/light theme toggle persisted to `localStorage`, affecting all CSS custom properties in real-time
+- [x] **`useGlassmorphism()` Hook** (`hooks/useGlassmorphism.js`) — Dynamic glass class selection with performance monitoring, backdrop-filter support detection, and reduced-motion preference respect
+- [x] **Performance Monitor** (`utils/performanceMonitor.js`) — Frames-per-second watchdog that automatically degrades glassmorphism effects when FPS drops below 30 on low-end devices
+- [x] **Theme Enhancer** (`utils/themeEnhancer.js`) — Enhances Tailwind CSS with dynamic CSS variable bindings for seamless dark/light mode transitions
+
+**Authentication & Form Polish**
+- [x] **Password Visibility Toggle** — Robust eye icon (Lucide `Eye`/`EyeOff`) with `z-index: 30` absolute positioning, `e.preventDefault()` / `e.stopPropagation()` to block browser native reveal interference, and `aria-label` for accessibility
+- [x] **Native Browser Icon Suppression** (`index.css`) — `::-ms-reveal`, `::-webkit-reveal`, `::-webkit-clear-button`, `::-webkit-credentials-auto-fill-button`, `::-webkit-contacts-auto-fill-button` all forced to `display: none !important; width: 0; height: 0` to prevent native password UI from conflicting with custom eye toggle
+- [x] **Phone Input Digit Filtering** — `onChange` strips non-digit characters and caps at 10 digits; `+91` prefix visually rendered but never submitted
+- [x] **Password Strength Meter** — 4-segment animated bar + rule checklist (length ≥ 8, uppercase, number, special char) on Register form
+
+**Worker Portal UI Components**
+- [x] **Zone Heatmap** (`components/ZoneHeatmap.jsx`) — Color-coded zone risk visualization using CSS grid with Recharts integration for trend lines
+- [x] **Storytelling Overlay** — "How SafeShift Works" 5-step guided modal on Worker Dashboard with animated step cards; dismissable once per session
+- [x] **Live Weather Pills** — Real-time weather condition chips (Rain, AQI, Temp, Feels-like) pulled from `/api/triggers/live-conditions/:zone_id` with conditional tint coloring on dangerous values
+- [x] **Trigger Simulation** — One-tap simulation of all 5 trigger types from Worker Dashboard for demo purposes
+
+**Admin Portal UI Components**
+- [x] **Fraud Queue Panel** — Tabular claim review with approve/reject actions, claim detail expansion, and trust score badge coloring (green/amber/red)
+- [x] **Recharts Integration** — `BarChart`, `LineChart`, `PieChart`, `AreaChart` for loss ratio trends, payout history, zone analytics, and trigger event timelines
+- [x] **KPI Cards** — Animated metric cards with live counters, percentage change indicators, and glassmorphism card styling
+- [x] **Trigger Simulation Console** — Admin-accessible trigger simulation panel for demo and testing
+
+#### ✅ Backend Phase-3 Enhancements
+- [x] **Full Isolation Forest fraud anomaly detection** — Operational in `services/fraudScorer.js`
+- [x] **Ring detection** (DBSCAN + enrollment surge + device fingerprint) — Operational in `services/ringDetector.js`
+- [x] **All 5 parametric triggers live** — Rain, AQI, Heat, Dark Store Closure, Platform Shutdown all operational
+- [x] **Worker dashboard with zone risk heatmap** — Zone risk data exposed via `/api/admin/zone-analytics`
+- [x] **Admin/insurer analytics panel** — Full KPI dashboard, loss ratio trends, fraud queue management
+- [x] **Mass Disruption Mode** — Automatic threshold relaxation when >40% of zone workers claim simultaneously during confirmed severe events
+- [x] **5-minute demo video** — [Google Drive Link](https://drive.google.com/file/d/1zz-yuvQiXDUXV6Kw7jli5TPDJxtmQy0Z/view?usp=sharing)
+- [x] **Final pitch deck** — [PDF Submitted]
 
 ---
 
@@ -1009,6 +1077,35 @@ Run 6-Signal Trust Scoring (< 15 sec per claim)
 | Full PostgreSQL Schema | ✅ Complete | `server/db/schema.sql` — 6 tables with audit trail |
 | GitHub Actions CI/CD Pipeline | ✅ Complete | `.github/workflows/deploy.yml` |
 | GitHub Repo | ✅ Live | [github.com/ssomasekhar018/safeshift_team_mj5](https://github.com/ssomasekhar018/safeshift_team_mj5) |
+
+---
+
+## 📦 Phase 3 Submission Checklist
+
+| Item | Status | Notes |
+|------|--------|-------|
+| **Dual-Portal Architecture** — PWA Worker + Web Admin separation | ✅ Complete | `.pwa-mode` CSS class, `useIsPWA()` hook, AnimatedWrapper PWA-awareness |
+| **AnimatedWrapper** — PWA-aware framer-motion components | ✅ Complete | `AnimatedPage/Crad/Card/Button/Text/List/ListItem/Icon` — hover/tap disabled in PWA |
+| **Three.js 3D Background** on auth pages | ✅ Complete | `ThreeBackground.jsx` — particle mesh; disabled in PWA for performance |
+| **Glassmorphism Design System** — CSS variable system (1274 lines) | ✅ Complete | `styles/glassmorphism.css` + `useGlassmorphism.js` hook |
+| **ThemeContext** — Dark/light theme with localStorage persistence | ✅ Complete | `context/ThemeContext.jsx` — live CSS variable swap |
+| **Performance Monitor** — FPS watchdog with auto-degrade | ✅ Complete | `utils/performanceMonitor.js` |
+| **AppShell** — PWA shell with no-scroll enforcement | ✅ Complete | `components/AppShell.jsx` — BottomTabBar + PageHeader; `overflow-hidden` for workers |
+| **Login Portal Switch** — Worker/Admin segmented control | ✅ Complete | `pages/Login.jsx` — `.pwa-mode` toggled on body before login |
+| **Register PWA Enforcement** | ✅ Complete | `pages/Register.jsx` — unconditionally applies `.pwa-mode` |
+| **Password Visibility Toggle** — Fixed eye icon with native browser suppression | ✅ Complete | `index.css` — all `::-webkit-reveal/::-ms-reveal` hidden; `z-index: 30` on button |
+| **Phone Input Digit Filtering** | ✅ Complete | `Login.jsx` + `Register.jsx` — strips non-digits, caps at 10 |
+| **Password Strength Meter** | ✅ Complete | `Register.jsx` — animated 4-bar + rule checklist |
+| **ConsentScreen** — GDPR-style consent capture | ✅ Complete | `pages/ConsentScreen.jsx` — worker must accept before dashboard |
+| **Profile Page** — Worker profile + logout | ✅ Complete | `pages/Profile.jsx` |
+| **Storytelling Overlay** — "How SafeShift Works" 5-step guided modal | ✅ Complete | `WorkerDashboard.jsx` — animated step cards, dismissable once |
+| **Live Weather Pills** — Real-time conditions from API | ✅ Complete | `WorkerDashboard.jsx` — Rain/AQI/Temp/Feels-like with conditional tint |
+| **Zone Heatmap** — Color-coded zone risk visualization | ✅ Complete | `components/ZoneHeatmap.jsx` — CSS grid + Recharts trend lines |
+| **Trigger Simulation Console** (Worker + Admin) | ✅ Complete | One-tap simulation of all 5 triggers for demo |
+| **Fraud Queue Panel** — Sortable table with approve/reject | ✅ Complete | `AdminDashboard.jsx` + `components/FraudQueue.jsx` — trust score color badges |
+| **Recharts Integration** — Bar/Line/Pie/Area charts | ✅ Complete | `AdminDashboard.jsx` — loss ratios, payout trends, zone analytics |
+| **KPI Animated Cards** — Live counters + change indicators | ✅ Complete | `AdminDashboard.jsx` — glassmorphism cards with stagger animations |
+| **GitHub Repo** | ✅ Live | [github.com/ssomasekhar018/safeshift_team_mj5](https://github.com/ssomasekhar018/safeshift_team_mj5) |
 
 ---
 

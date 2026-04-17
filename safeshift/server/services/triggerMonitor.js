@@ -4,6 +4,7 @@
  * Fires trigger events when thresholds are breached
  */
 const axios = require('axios');
+const { parseWeatherResponse, parseAQIResponse } = require('../utils/validators');
 
 class TriggerMonitor {
   constructor() {
@@ -15,23 +16,50 @@ class TriggerMonitor {
       shutdown: 1,    // boolean — platform-wide shutdown
     };
 
-    this.zones = [
-      { id: 'KOR-4B', lat: 12.9352, lon: 77.6245 },
-      { id: 'HSR-2A', lat: 12.9116, lon: 77.6389 },
-      { id: 'BTM-1C', lat: 12.9166, lon: 77.6101 },
-      { id: 'IND-3D', lat: 12.9784, lon: 77.6408 },
-      { id: 'WHT-5A', lat: 12.9698, lon: 77.7500 },
-      { id: 'MG-1B', lat: 12.9756, lon: 77.6066 },
-      { id: 'DL-CP', lat: 28.6315, lon: 77.2167 },
-      { id: 'DL-RK', lat: 28.5635, lon: 77.1724 },
+    // Zone coordinates with names for real API integration
+    this.ZONE_COORDS = [
+      { id: 'KOR-4B', lat: 12.9352, lon: 77.6245, name: 'Koramangala' },
+      { id: 'HSR-2A', lat: 12.9116, lon: 77.6389, name: 'HSR Layout' },
+      { id: 'BTM-1C', lat: 12.9166, lon: 77.6101, name: 'BTM Layout' },
+      { id: 'IND-3D', lat: 12.9784, lon: 77.6408, name: 'Indiranagar' },
+      { id: 'WHT-5A', lat: 12.9698, lon: 77.7500, name: 'Whitefield' },
+      { id: 'MG-1B', lat: 12.9756, lon: 77.6066, name: 'MG Road' },
+      { id: 'DL-CP', lat: 28.6315, lon: 77.2167, name: 'Connaught Place' },
+      { id: 'DL-RK', lat: 28.5635, lon: 77.1724, name: 'Rajouri Garden' },
     ];
+
+    // Backward compatibility
+    this.zones = this.ZONE_COORDS;
+
+    // Cache for last API results (zone_id -> conditions)
+    this.lastResults = new Map();
 
     this.pollingInterval = null;
     this.PORT = process.env.PORT || 4000;
 
-    // Track closure / shutdown state per zone (mock — in production, pull from platform APIs)
+    // Track closure / shutdown state per zone
     this.closureState = new Map();
     this.shutdownState = new Map();
+    
+    // Database pool reference (set by server.js)
+    this.pool = null;
+  }
+
+  /**
+   * Get current conditions for a specific zone
+   * @param {string} zoneId - Zone identifier
+   * @returns {object|null} - Cached weather conditions or null
+   */
+  getCurrentConditions(zoneId) {
+    return this.lastResults.get(zoneId) || null;
+  }
+
+  /**
+   * Get all zones' current conditions
+   * @returns {Map} - Map of zone_id -> conditions
+   */
+  getAllConditions() {
+    return new Map(this.lastResults);
   }
 
   /**
@@ -71,25 +99,54 @@ class TriggerMonitor {
   async _checkWeather(zone) {
     try {
       const apiKey = process.env.OPENWEATHER_API_KEY;
-      if (!apiKey || apiKey === 'demo_key') return;
+      
+      // Skip if no API key configured
+      if (!apiKey || apiKey === 'demo_key') {
+        return;
+      }
 
       const resp = await axios.get(
         `https://api.openweathermap.org/data/2.5/weather?lat=${zone.lat}&lon=${zone.lon}&appid=${apiKey}&units=metric`,
         { timeout: 5000 }
       );
 
-      const rain1h = resp.data.rain?.['1h'] || 0;
-      const temp = resp.data.main?.temp || 0;
+      // Parse response with safe defaults
+      const weatherData = parseWeatherResponse(resp.data);
+      weatherData.zone_id = zone.id;
+      
+      // Cache the results
+      const cached = this.lastResults.get(zone.id) || {};
+      this.lastResults.set(zone.id, {
+        ...cached,
+        rainfall_mm: weatherData.rainfall_mm,
+        temperature_c: weatherData.temperature_c,
+        feels_like_c: weatherData.feels_like_c,
+        humidity: weatherData.humidity,
+        source: weatherData.source,
+        timestamp: weatherData.timestamp,
+        zone_id: zone.id,
+      });
 
-      if (rain1h >= this.THRESHOLDS.rain) {
-        await this._fireTrigger(zone.id, 'rain', rain1h, resp.data);
+      console.log(`[MONITOR] 🟢 Weather data for ${zone.id}: ${weatherData.temperature_c}°C, ${weatherData.rainfall_mm}mm/hr (${weatherData.source})`);
+
+      // Check thresholds and fire triggers
+      if (weatherData.rainfall_mm >= this.THRESHOLDS.rain) {
+        await this._fireTrigger(zone.id, 'rain', weatherData.rainfall_mm, resp.data);
       }
 
-      if (temp >= this.THRESHOLDS.heat) {
-        await this._fireTrigger(zone.id, 'heat', temp, resp.data);
+      if (weatherData.temperature_c >= this.THRESHOLDS.heat) {
+        await this._fireTrigger(zone.id, 'heat', weatherData.temperature_c, resp.data);
       }
     } catch (err) {
-      // Silent fail for API errors
+      // Handle authentication errors
+      if (err.response && (err.response.status === 401 || err.response.status === 403)) {
+        console.error(`[MONITOR] ❌ OpenWeatherMap authentication error for ${zone.id}: ${err.message}`);
+      } else if (err.code === 'ECONNABORTED') {
+        console.warn(`[MONITOR] ⏱️ OpenWeatherMap timeout for ${zone.id}, skipping this poll`);
+      } else {
+        console.warn(`[MONITOR] ⚠️ OpenWeatherMap error for ${zone.id}: ${err.message}`);
+      }
+      // Continue polling other zones
     }
   }
 
@@ -98,20 +155,50 @@ class TriggerMonitor {
    */
   async _checkAQI(zone) {
     try {
-      const apiKey = process.env.AQICN_API_KEY;
-      if (!apiKey || apiKey === 'demo_key') return;
+      const apiKey = process.env.AQICN_TOKEN;
+      
+      // Skip if no API key configured
+      if (!apiKey || apiKey === 'demo_key') {
+        return;
+      }
 
       const resp = await axios.get(
         `https://api.waqi.info/feed/geo:${zone.lat};${zone.lon}/?token=${apiKey}`,
         { timeout: 5000 }
       );
 
-      const aqi = resp.data?.data?.aqi || 0;
-      if (aqi >= this.THRESHOLDS.aqi) {
-        await this._fireTrigger(zone.id, 'aqi', aqi, resp.data);
+      // Parse response with safe defaults
+      const aqiData = parseAQIResponse(resp.data);
+      aqiData.zone_id = zone.id;
+      
+      // Cache the results
+      const cached = this.lastResults.get(zone.id) || {};
+      this.lastResults.set(zone.id, {
+        ...cached,
+        aqi: aqiData.aqi,
+        pm25: aqiData.pm25,
+        pm10: aqiData.pm10,
+        aqi_source: aqiData.source,
+        aqi_timestamp: aqiData.timestamp,
+        zone_id: zone.id,
+      });
+
+      console.log(`[MONITOR] 🟢 AQI data for ${zone.id}: ${aqiData.aqi} (${aqiData.source})`);
+
+      // Check threshold and fire trigger
+      if (aqiData.aqi >= this.THRESHOLDS.aqi) {
+        await this._fireTrigger(zone.id, 'aqi', aqiData.aqi, resp.data);
       }
     } catch (err) {
-      // Silent fail
+      // Handle authentication errors
+      if (err.response && (err.response.status === 401 || err.response.status === 403)) {
+        console.error(`[MONITOR] ❌ AQICN authentication error for ${zone.id}: ${err.message}`);
+      } else if (err.code === 'ECONNABORTED') {
+        console.warn(`[MONITOR] ⏱️ AQICN timeout for ${zone.id}, skipping this poll`);
+      } else {
+        console.warn(`[MONITOR] ⚠️ AQICN error for ${zone.id}: ${err.message}`);
+      }
+      // Continue polling other zones
     }
   }
 
@@ -169,15 +256,77 @@ class TriggerMonitor {
 
   async _fireTrigger(zoneId, triggerType, value, apiPayload) {
     console.log(`[MONITOR] 🔥 TRIGGER: ${triggerType.toUpperCase()} in ${zoneId} = ${value}`);
+    
     try {
+      // Calculate claiming percentage and severity for mass disruption detection
+      let claimingPercentage = 0;
+      let severityLevel = 'normal';
+      let massDisruptionMode = 0;
+      
+      if (this.pool) {
+        try {
+          // Query total workers and active policies in zone
+          const workersResult = await this.pool.query(
+            'SELECT COUNT(*) as count FROM workers WHERE zone_id = $1',
+            [zoneId]
+          );
+          const policiesResult = await this.pool.query(
+            'SELECT COUNT(*) as count FROM policies WHERE zone_id = $1 AND status = $2',
+            [zoneId, 'active']
+          );
+          
+          const totalWorkers = parseInt(workersResult.rows[0].count) || 0;
+          const activePolicies = parseInt(policiesResult.rows[0].count) || 0;
+          
+          // Calculate claiming percentage (handle division by zero)
+          if (totalWorkers > 0) {
+            claimingPercentage = activePolicies / totalWorkers;
+          }
+          
+          // Get current conditions for severity classification
+          const conditions = this.lastResults.get(zoneId) || {};
+          severityLevel = this.classifySeverity(conditions);
+          
+          // Check mass disruption activation criteria
+          if (claimingPercentage > 0.40 && severityLevel === 'severe') {
+            massDisruptionMode = 1;
+            console.log(`[MONITOR] ⚠️ MASS DISRUPTION activated in ${zoneId}: ${(claimingPercentage * 100).toFixed(1)}% claiming, ${severityLevel} severity`);
+          }
+        } catch (dbErr) {
+          console.warn(`[MONITOR] Database query failed for mass disruption check: ${dbErr.message}`);
+        }
+      }
+      
+      // Fire trigger with mass disruption metadata
       await axios.post(`http://localhost:${this.PORT}/api/triggers/simulate`, {
         zone_id: zoneId,
         trigger_type: triggerType,
         threshold_value: value,
+        mass_disruption_mode: massDisruptionMode,
+        claiming_percentage: claimingPercentage,
+        severity_level: severityLevel,
       }, { timeout: 15000 });
     } catch (err) {
       console.error(`[MONITOR] Failed to fire trigger:`, err.message);
     }
+  }
+  
+  /**
+   * Classify severity level based on weather conditions
+   * @param {object} conditions - Current weather conditions
+   * @returns {string} - 'severe' or 'normal'
+   */
+  classifySeverity(conditions) {
+    const rainfall = conditions.rainfall_mm || 0;
+    const aqi = conditions.aqi || 0;
+    const temperature = conditions.temperature_c || 0;
+    
+    // Severe if: rainfall > 25 OR aqi > 500 OR temperature > 48
+    if (rainfall > 25 || aqi > 500 || temperature > 48) {
+      return 'severe';
+    }
+    
+    return 'normal';
   }
 }
 

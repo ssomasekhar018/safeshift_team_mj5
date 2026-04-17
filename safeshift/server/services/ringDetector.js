@@ -1,5 +1,5 @@
 /**
- * SafeShift — Ring Detector Service
+ * SafeShift — Ring Detector Service (MongoDB/Mongoose version)
  * Detects coordinated fraud patterns:
  * Signal 1: Same device hash across multiple workers (device sharing)
  * Signal 2: Temporal clustering of claims
@@ -7,7 +7,7 @@
  * Signal 4: GPS coordinate clustering via DBSCAN
  * Signal 5: Cross-zone anomaly detection
  */
-const { pool } = require('../db/init');
+const { connectMongoDB, getModels } = require('../db/mongodb');
 
 class RingDetector {
   constructor() {
@@ -87,16 +87,21 @@ class RingDetector {
 
     // 5. Cross-zone anomaly — claims from different cities simultaneously
     try {
-      const result = await pool.query(
-        `SELECT DISTINCT w.zone_id FROM claims c
-         JOIN workers w ON w.id = c.worker_id
-         WHERE c.worker_id = $1 AND c.created_at > NOW() - INTERVAL '6 hours'`,
-        [workerId]
-      );
-      if (result.rows.length > 2) {
+      await connectMongoDB();
+      const { Claim } = getModels();
+      const sixHoursAgo = new Date(Date.now() - 6 * 3600000);
+      
+      const recentClaims = await Claim.find({
+        worker_id: workerId,
+        created_at: { $gt: sixHoursAgo }
+      }).populate('worker_id', 'zone_id');
+
+      const distinctZones = new Set(recentClaims.map(c => c.worker_id?.zone_id).filter(Boolean));
+      
+      if (distinctZones.size > 2) {
         patterns.push({
           type: 'MULTI_ZONE_ANOMALY',
-          detail: `Claims from ${result.rows.length} different zones in 6h`,
+          detail: `Claims from ${distinctZones.size} different zones in 6h`,
           severity: 'critical',
         });
         confidence += 0.5;
@@ -121,22 +126,24 @@ class RingDetector {
    */
   async _checkEnrollmentSurge(zoneId) {
     try {
-      // Check new registrations in last 48h for this zone
-      const recentResult = await pool.query(
-        `SELECT COUNT(*) as count FROM workers
-         WHERE zone_id = $1 AND created_at > NOW() - INTERVAL '48 hours'`,
-        [zoneId]
-      );
-      // Check normal baseline (last 30 days average per 48h window)
-      const baselineResult = await pool.query(
-        `SELECT COUNT(*) as count FROM workers
-         WHERE zone_id = $1 AND created_at > NOW() - INTERVAL '30 days'`,
-        [zoneId]
-      );
+      await connectMongoDB();
+      const { Worker } = getModels();
+      const fortyEightHoursAgo = new Date(Date.now() - 48 * 3600000);
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600000);
 
-      const recentCount = parseInt(recentResult.rows[0].count || 0);
-      const totalLast30d = parseInt(baselineResult.rows[0].count || 1);
-      const avgPer48h = (totalLast30d / 30) * 2; // average per 48h
+      // Check new registrations in last 48h for this zone
+      const recentCount = await Worker.countDocuments({
+        zone_id: zoneId,
+        created_at: { $gt: fortyEightHoursAgo }
+      });
+
+      // Check normal baseline (last 30 days average per 48h window)
+      const totalLast30d = await Worker.countDocuments({
+        zone_id: zoneId,
+        created_at: { $gt: thirtyDaysAgo }
+      });
+
+      const avgPer48h = (Math.max(totalLast30d, 1) / 30) * 2; // average per 48h
 
       if (recentCount > avgPer48h * 3 && recentCount >= 5) {
         return {
@@ -164,36 +171,25 @@ class RingDetector {
    * DBSCAN-based GPS clustering
    * Clusters claim GPS coordinates and flags if too many claims come from
    * identical/near-identical coordinates (spoofing indicator)
-   *
-   * DBSCAN params:
-   *   eps: 0.0003 (~30m radius)
-   *   minPts: 3 (minimum 3 claims from same spot = suspicious)
    */
   _dbscanClusterCheck(lat, lon, zoneId) {
-    // Collect recent GPS coords from claimTimestamps contextually
-    // In this simplified version, we track GPS in-memory
     if (!this._gpsPoints) this._gpsPoints = [];
 
     this._gpsPoints.push({ lat, lon, ts: Date.now(), zoneId });
 
-    // Prune old points (keep last 24h)
     const now = Date.now();
     this._gpsPoints = this._gpsPoints.filter(p => now - p.ts < 24 * 3600000);
 
-    // Run DBSCAN on points in this zone
     const zonePoints = this._gpsPoints.filter(p => p.zoneId === zoneId);
     if (zonePoints.length < 3) return { isSuspicious: false };
 
     const eps = 0.0003; // ~30 meters
     const minPts = 3;
 
-    // Find clusters using DBSCAN
     const clusters = this._dbscan(zonePoints.map(p => [p.lat, p.lon]), eps, minPts);
 
-    // Check if any cluster has too many points (spoofed coordinates)
     for (const cluster of clusters) {
       if (cluster.length >= minPts) {
-        // Check if the current point is in this suspicious cluster
         const currentInCluster = cluster.some(idx => {
           const p = zonePoints[idx];
           const dist = Math.sqrt(Math.pow(p.lat - lat, 2) + Math.pow(p.lon - lon, 2));
@@ -211,29 +207,21 @@ class RingDetector {
     return { isSuspicious: false };
   }
 
-  /**
-   * DBSCAN algorithm implementation
-   * @param {number[][]} points - Array of [lat, lon] pairs
-   * @param {number} eps - Maximum distance between two points
-   * @param {number} minPts - Minimum points to form a dense cluster
-   * @returns {number[][]} Array of clusters (each cluster is array of point indices)
-   */
   _dbscan(points, eps, minPts) {
     const n = points.length;
-    const labels = new Array(n).fill(-1); // -1 = unvisited
+    const labels = new Array(n).fill(-1);
     const clusters = [];
     let clusterId = 0;
 
     for (let i = 0; i < n; i++) {
-      if (labels[i] !== -1) continue; // Already visited
+      if (labels[i] !== -1) continue;
 
       const neighbors = this._rangeQuery(points, i, eps);
       if (neighbors.length < minPts) {
-        labels[i] = -2; // Noise
+        labels[i] = -2;
         continue;
       }
 
-      // Start new cluster
       const cluster = [];
       labels[i] = clusterId;
       cluster.push(i);
@@ -263,9 +251,6 @@ class RingDetector {
     return clusters;
   }
 
-  /**
-   * Find all points within eps distance of point at index
-   */
   _rangeQuery(points, index, eps) {
     const neighbors = [];
     for (let i = 0; i < points.length; i++) {
@@ -281,9 +266,6 @@ class RingDetector {
     return neighbors;
   }
 
-  /**
-   * Get full ring analysis report for admin dashboard
-   */
   getReport() {
     const sharedDevices = [];
     for (const [hash, workers] of this.deviceMap.entries()) {

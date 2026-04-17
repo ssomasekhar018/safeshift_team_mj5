@@ -1,11 +1,17 @@
 /**
  * SafeShift Trigger Routes
  * Zone status, trigger simulation, and zone check-in
+ * 
+ * MongoDB Migration: All database operations now use Mongoose models
  */
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../db/init');
+const mongoose = require('mongoose');
+const { connectMongoDB, getModels } = require('../db/mongodb');
 const { authenticate } = require('../middleware/auth');
+
+// MongoDB models - will be initialized after connection
+let Worker, TriggerEvent;
 
 // Demo zone data
 const DEMO_ZONES = {
@@ -18,6 +24,81 @@ const DEMO_ZONES = {
   'DL-CP': { name: 'Connaught Place', city: 'Delhi', pincode: '110001', lat: 28.6315, lon: 77.2167, risk: 68 },
   'DL-RK': { name: 'RK Puram', city: 'Delhi', pincode: '110022', lat: 28.5635, lon: 77.1724, risk: 75 },
 };
+
+/**
+ * GET /api/triggers/live-conditions/:zoneId
+ * Get live weather conditions for a specific zone from TriggerMonitor cache
+ */
+router.get('/live-conditions/:zoneId', (req, res) => {
+  const { zoneId } = req.params;
+  
+  // Access TriggerMonitor from app.locals
+  const monitor = req.app.locals.monitor;
+  
+  if (!monitor) {
+    return res.status(503).json({ 
+      error: 'TriggerMonitor not available',
+      message: 'Weather monitoring service is not running'
+    });
+  }
+  
+  const conditions = monitor.getCurrentConditions(zoneId);
+  
+  if (!conditions) {
+    // Return demo data if no cached conditions
+    return res.json({
+      success: true,
+      zone_id: zoneId,
+      rainfall_mm: 0,
+      temperature_c: 28,
+      feels_like_c: 30,
+      humidity: 65,
+      aqi: 120,
+      pm25: 45,
+      pm10: 60,
+      source: 'demo',
+      aqi_source: 'demo',
+      timestamp: new Date().toISOString(),
+      message: 'No live data available yet - using demo values'
+    });
+  }
+  
+  res.json({
+    success: true,
+    ...conditions
+  });
+});
+
+/**
+ * GET /api/triggers/all-conditions
+ * Get live weather conditions for all zones from TriggerMonitor cache
+ */
+router.get('/all-conditions', (req, res) => {
+  // Access TriggerMonitor from app.locals
+  const monitor = req.app.locals.monitor;
+  
+  if (!monitor) {
+    return res.status(503).json({ 
+      error: 'TriggerMonitor not available',
+      message: 'Weather monitoring service is not running'
+    });
+  }
+  
+  const allConditions = monitor.getAllConditions();
+  
+  // Convert Map to object for JSON response
+  const conditionsObj = {};
+  allConditions.forEach((value, key) => {
+    conditionsObj[key] = value;
+  });
+  
+  res.json({
+    success: true,
+    zones: conditionsObj,
+    count: allConditions.size,
+    timestamp: new Date().toISOString()
+  });
+});
 
 /**
  * GET /api/triggers/zones
@@ -46,11 +127,10 @@ router.get('/zone/:id', async (req, res) => {
   // Get recent triggers for this zone
   let recentTriggers = [];
   try {
-    const result = await pool.query(
-      `SELECT * FROM trigger_events WHERE zone_id = $1 ORDER BY triggered_at DESC LIMIT 10`,
-      [zoneId]
-    );
-    recentTriggers = result.rows;
+    recentTriggers = await TriggerEvent.find({ zone_id: zoneId })
+      .sort({ triggered_at: -1 })
+      .limit(10)
+      .lean();
   } catch (err) {
     // Demo triggers
     recentTriggers = [
@@ -97,12 +177,18 @@ router.post('/simulate', async (req, res) => {
   // Create trigger event
   let triggerId = `trigger-${Date.now()}`;
   try {
-    const result = await pool.query(
-      `INSERT INTO trigger_events (zone_id, trigger_type, threshold_value, threshold_unit, api_payload)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-      [zone_id, trigger_type, value, defaults.unit, JSON.stringify({ simulated: true, zone_id, trigger_type, value, timestamp: new Date().toISOString() })]
-    );
-    triggerId = result.rows[0].id;
+    const triggerEvent = await TriggerEvent.create({
+      zone_id,
+      trigger_type,
+      threshold_value: value,
+      threshold_unit: defaults.unit,
+      api_payload: {
+        simulated: true,
+        source: 'demo',
+        raw_data: { zone_id, trigger_type, value, timestamp: new Date().toISOString() }
+      }
+    });
+    triggerId = triggerEvent._id.toString();
   } catch (err) {
     console.warn('[TRIGGER] DB insert failed, using mock ID');
   }
@@ -157,12 +243,19 @@ router.post('/checkin', authenticate, async (req, res) => {
   const { lat, lon, network_type, signal_strength, battery_level } = req.body;
 
   try {
-    await pool.query(
-      `UPDATE workers SET last_gps_lat = $1, last_gps_lon = $2,
-       trust_history = trust_history || $3::jsonb
-       WHERE id = $4`,
-      [lat || 12.9352, lon || 77.6245, JSON.stringify({ lat, lon, ts: new Date().toISOString(), network_type, signal_strength }), req.user.id]
-    );
+    await Worker.findByIdAndUpdate(req.user.id, {
+      'last_gps.lat': lat || 12.9352,
+      'last_gps.lon': lon || 77.6245,
+      'last_gps.updated_at': new Date(),
+      $push: {
+        trust_history: {
+          lat, lon, 
+          ts: new Date().toISOString(), 
+          network_type, 
+          signal_strength
+        }
+      }
+    });
   } catch (err) {
     // ignore
   }
@@ -176,10 +269,11 @@ router.post('/checkin', authenticate, async (req, res) => {
  */
 router.get('/recent', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT * FROM trigger_events ORDER BY triggered_at DESC LIMIT 20`
-    );
-    return res.json({ success: true, triggers: result.rows });
+    const triggers = await TriggerEvent.find()
+      .sort({ triggered_at: -1 })
+      .limit(20)
+      .lean();
+    return res.json({ success: true, triggers });
   } catch (err) {
     // Demo data
     res.json({
@@ -193,5 +287,21 @@ router.get('/recent', async (req, res) => {
     });
   }
 });
+
+// Initialize MongoDB models on router load
+async function initializeModels() {
+  try {
+    await connectMongoDB();
+    const models = getModels();
+    Worker = models.Worker;
+    TriggerEvent = models.TriggerEvent;
+    console.log('[TRIGGERS] MongoDB models initialized');
+  } catch (err) {
+    console.error('[TRIGGERS] Failed to initialize MongoDB models:', err.message);
+  }
+}
+
+// Initialize on module load
+initializeModels();
 
 module.exports = router;

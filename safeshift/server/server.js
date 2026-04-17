@@ -3,22 +3,41 @@
  * AI-Powered Parametric Income Insurance for Q-Commerce Workers
  * DEVTrails 2026 Hackathon Submission
  */
-require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 
-const { initDB } = require('./db/init');
+// Initialize configuration manager (loads dotenv internally)
+const config = require('./utils/config');
+
+const { connectMongoDB, seedMongoAccounts, getModels } = require('./db/mongodb');
 const TriggerMonitor = require('./services/triggerMonitor');
 const RetrainingScheduler = require('./services/retrainingScheduler');
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+
+// Initialize and validate configuration
+const appConfig = config.initialize();
+const PORT = appConfig.server.port;
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false }));
+app.set('trust proxy', 1);          // Required: correct IP for proxy detection
+app.disable('x-powered-by');        // Don't expose Express.js version
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc:  ["'self'"],
+      styleSrc:   ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc:    ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc:     ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'", 'https://api.openweathermap.org', 'https://api.waqi.info'],
+    },
+  },
+  hsts: { maxAge: 31536000, includeSubDomains: true },
+}));
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: appConfig.server.clientUrl,
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));
@@ -36,6 +55,16 @@ app.use('/api/policies', require('./routes/policies'));
 app.use('/api/claims', require('./routes/claims'));
 app.use('/api/triggers', require('./routes/triggers'));
 app.use('/api/admin', require('./routes/admin'));
+app.use('/api/security', require('./routes/security'));
+
+// ─── Configuration Endpoint ──────────────────────────────────────────────────
+app.get('/api/config', (req, res) => {
+  res.json({
+    status: 'ok',
+    config: config.getFrontendConfig(),
+    timestamp: new Date().toISOString()
+  });
+});
 
 // ─── Health Check ────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
@@ -61,8 +90,28 @@ app.use((err, req, res, next) => {
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 async function start() {
-  // Initialize database
-  await initDB();
+  // Validate and print configuration status
+  config.printStatus();
+  
+  // Initialize MongoDB connection centrally
+  try {
+    await connectMongoDB();
+    const { Worker, Admin } = getModels();
+    const mongoWorkerCount = await Worker.countDocuments();
+    const mongoAdminCount = await Admin.countDocuments();
+
+    // Always run seed in demo/development to ensure cleanup of TEST- data
+    if (mongoWorkerCount === 0 && mongoAdminCount === 0) {
+      await seedMongoAccounts();
+    } else if (appConfig.server.nodeEnv !== 'production') {
+      // In development/demo, ensure cleanup runs
+      await seedMongoAccounts();
+    }
+
+    console.log('[MongoDB] Central connection and seeding complete');
+  } catch (err) {
+    console.error('[MongoDB] Central initialization failed:', err.message);
+  }
 
   // Start HTTP server
   app.listen(PORT, () => {
@@ -71,7 +120,7 @@ async function start() {
     console.log('║          🛡️  SafeShift API Server  🛡️            ║');
     console.log('╠══════════════════════════════════════════════════╣');
     console.log(`║  Port:     ${PORT}                                 ║`);
-    console.log(`║  Mode:     ${process.env.NODE_ENV || 'development'}                       ║`);
+    console.log(`║  Mode:     ${appConfig.server.nodeEnv}                       ║`);
     console.log('║  API:      http://localhost:' + PORT + '/api/health     ║');
     console.log('║  Client:   http://localhost:5173               ║');
     console.log('╚══════════════════════════════════════════════════╝');
@@ -80,7 +129,8 @@ async function start() {
 
   // Start trigger monitor (polls weather/AQI APIs)
   const monitor = new TriggerMonitor();
-  if (process.env.NODE_ENV === 'production') {
+  app.locals.monitor = monitor; // Expose for route access
+  if (appConfig.server.nodeEnv === 'production') {
     monitor.start(300000); // Every 5 min in production
   }
 

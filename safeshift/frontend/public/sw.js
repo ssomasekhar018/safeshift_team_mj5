@@ -4,7 +4,7 @@
  * Cache-first strategy for static assets, network-first for API calls.
  */
 
-const CACHE_NAME = 'safeshift-v2';
+const CACHE_NAME = 'safeshift-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -16,10 +16,10 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
       console.log('[SW] Caching static assets');
+      // Use return to ensure addAll completes
       return cache.addAll(STATIC_ASSETS);
-    })
+    }).then(() => self.skipWaiting())
   );
-  self.skipWaiting();
 });
 
 // Activate: clean up old caches
@@ -38,13 +38,16 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
+  // Only cache HTTP/HTTPS requests to avoid "chrome-extension" scheme errors
+  const isCacheable = url.protocol.startsWith('http');
+
   // API requests — network first, cache fallback
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
           // Cache successful GET API responses for offline use
-          if (event.request.method === 'GET' && response.status === 200) {
+          if (isCacheable && event.request.method === 'GET' && response.status === 200) {
             const clone = response.clone();
             caches.open(CACHE_NAME).then((cache) => {
               cache.put(event.request, clone);
@@ -70,15 +73,24 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response.status === 200) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, clone);
-          });
-        }
-        return response;
-      });
+      return fetch(event.request)
+        .then((response) => {
+          if (isCacheable && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, clone);
+            });
+          }
+          return response;
+        })
+        .catch((err) => {
+          console.error('[SW] Fetch failed:', err);
+          // Return a fallback for index.html if it fails
+          if (event.request.mode === 'navigate') {
+            return caches.match('/');
+          }
+          throw err;
+        });
     })
   );
 });

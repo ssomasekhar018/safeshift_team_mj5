@@ -1,30 +1,32 @@
 import axios from 'axios';
 
-// In production (Vercel), VITE_API_URL = https://your-app.onrender.com
-// In local dev, Vite proxy forwards /api → localhost:4000
-const API_BASE = import.meta.env.VITE_API_URL
-  ? `${import.meta.env.VITE_API_URL}/api`
-  : '/api';
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
-const api = axios.create({
+export const api = axios.create({
   baseURL: API_BASE,
-  timeout: 15000,
+  timeout: 8000,
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Attach JWT token to every request
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('safeshift_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// Handle auth errors
 api.interceptors.response.use(
   (res) => res,
   (err) => {
+    if (!err.response) {
+      // Network error — backend not running
+      return Promise.reject({ 
+        response: { 
+          data: { 
+            error: 'Cannot connect to server. Is the backend running on port 4000?' 
+          } 
+        }
+      });
+    }
     if (err.response?.status === 401) {
       localStorage.removeItem('safeshift_token');
       localStorage.removeItem('safeshift_user');

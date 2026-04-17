@@ -28,8 +28,11 @@ class FraudScorer {
   /**
    * Score a claim based on 6 device/behavior signals
    * Returns { score: 0–100, signals: { ... }, flags: [...] }
+   * @param {object} options - Scoring options
+   * @param {boolean} options.massDisruptionMode - Whether mass disruption is active (lowers thresholds)
+   * @param {object} options.pool - Database pool for ring detection queries
    */
-  async score({ workerId, deviceHash, gpsLat, gpsLon, zoneId, triggerType, trustHistory }) {
+  async score({ workerId, deviceHash, gpsLat, gpsLon, zoneId, triggerType, trustHistory, massDisruptionMode = false, pool = null }) {
     const signals = {};
     const flags = [];
 
@@ -58,15 +61,53 @@ class FraudScorer {
     }
     score = Math.round(Math.min(100, Math.max(0, score)));
 
-    // Flag suspicious patterns
-    if (signals.gps_jitter < 0.4) flags.push('GPS_SPOOF_SUSPECTED');
-    if (signals.network_match < 0.3) flags.push('NETWORK_MISMATCH');
-    if (signals.accelerometer < 0.2) flags.push('DEVICE_STATIONARY');
-    if (signals.zone_history < 0.3) flags.push('NEW_ZONE_NO_HISTORY');
-    if (signals.platform_active < 0.3) flags.push('PLATFORM_OFFLINE');
+    // Adjust thresholds for mass disruption mode (lower by 15 points)
+    const gpsThreshold = massDisruptionMode ? 0.25 : 0.4;
+    const networkThreshold = massDisruptionMode ? 0.15 : 0.3;
+    const accelThreshold = massDisruptionMode ? 0.05 : 0.2;
+    const zoneThreshold = massDisruptionMode ? 0.15 : 0.3;
+    const platformThreshold = massDisruptionMode ? 0.15 : 0.3;
 
-    // Ring detection — check for coordinated claims
-    if (deviceHash) {
+    // Flag suspicious patterns with adjusted thresholds
+    if (signals.gps_jitter < gpsThreshold) flags.push('GPS_SPOOF_SUSPECTED');
+    if (signals.network_match < networkThreshold) flags.push('NETWORK_MISMATCH');
+    if (signals.accelerometer < accelThreshold) flags.push('DEVICE_STATIONARY');
+    if (signals.zone_history < zoneThreshold) flags.push('NEW_ZONE_NO_HISTORY');
+    if (signals.platform_active < platformThreshold) flags.push('PLATFORM_OFFLINE');
+
+    // Ring detection — enhanced in mass disruption mode
+    if (massDisruptionMode && pool && gpsLat && gpsLon) {
+      try {
+        // Call ML service ring detection endpoint
+        const axios = require('axios');
+        const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+        
+        // Get all recent claims in zone with GPS coordinates
+        const claimsResult = await pool.query(
+          `SELECT id as claim_id, gps_lat, gps_lon 
+           FROM claims 
+           WHERE zone_id = $1 AND created_at > NOW() - INTERVAL '24 hours'
+           AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL`,
+          [zoneId]
+        );
+        
+        if (claimsResult.rows.length >= 3) {
+          const ringResponse = await axios.post(`${ML_SERVICE_URL}/ring-detect`, {
+            claims: claimsResult.rows,
+            eps: 0.01,
+            min_samples: 3,
+          }, { timeout: 5000 });
+          
+          if (ringResponse.data.dbscan_clusters > 0) {
+            flags.push('RING_PATTERN_DETECTED');
+            console.log(`[FRAUD] Ring detection: ${ringResponse.data.dbscan_clusters} clusters found in ${zoneId}`);
+          }
+        }
+      } catch (err) {
+        console.warn(`[FRAUD] Ring detection failed: ${err.message}`);
+      }
+    } else if (deviceHash) {
+      // Fallback ring detection
       const ringRisk = this._checkRingPatterns(workerId, deviceHash);
       if (ringRisk > 0.7) {
         flags.push('RING_PATTERN_DETECTED');
@@ -74,7 +115,11 @@ class FraudScorer {
       }
     }
 
-    console.log(`[FRAUD] Worker ${workerId}: score=${score}, flags=[${flags.join(', ')}]`);
+    if (massDisruptionMode) {
+      console.log(`[FRAUD] Worker ${workerId}: score=${score}, flags=[${flags.join(', ')}] (MASS DISRUPTION MODE)`);
+    } else {
+      console.log(`[FRAUD] Worker ${workerId}: score=${score}, flags=[${flags.join(', ')}]`);
+    }
 
     return { score, signals, flags };
   }

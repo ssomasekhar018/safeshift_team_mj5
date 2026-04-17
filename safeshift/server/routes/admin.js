@@ -1,11 +1,27 @@
-/**
- * SafeShift Admin Routes
- * Insurer dashboard: KPIs, loss ratios, fraud queue, predictive analytics
- */
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../db/init');
+const { connectMongoDB, getModels } = require('../db/mongodb');
 const { authenticate } = require('../middleware/auth');
+
+// MongoDB models
+let Worker, Policy, Claim, TriggerEvent;
+
+/**
+ * Initialize models before each request
+ */
+router.use(async (req, res, next) => {
+  try {
+    await connectMongoDB();
+    const models = getModels();
+    Worker = models.Worker;
+    Policy = models.Policy;
+    Claim = models.Claim;
+    TriggerEvent = models.TriggerEvent;
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * GET /api/admin/dashboard
@@ -13,44 +29,47 @@ const { authenticate } = require('../middleware/auth');
  */
 router.get('/dashboard', authenticate, async (req, res) => {
   try {
-    const [workers, policies, claims, triggers] = await Promise.all([
-      pool.query('SELECT COUNT(*) as count FROM workers'),
-      pool.query(`SELECT COUNT(*) as count, SUM(premium_inr) as total_premium FROM policies WHERE status = 'active'`),
-      pool.query(`SELECT status, COUNT(*) as count, SUM(payout_inr) as total_payout FROM claims GROUP BY status`),
-      pool.query('SELECT COUNT(*) as count FROM trigger_events WHERE triggered_at > NOW() - INTERVAL \'7 days\''),
+    const last7Days = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const last24Hours = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    const [workerCount, activePolicies, claimsByStatus, triggerCount, massDisruptionCount] = await Promise.all([
+      Worker.countDocuments(),
+      Policy.aggregate([
+        { $match: { status: 'active' } },
+        { $group: { _id: null, count: { $sum: 1 }, totalPremium: { $sum: '$premium_inr' } } }
+      ]),
+      Claim.aggregate([
+        { $group: { _id: '$status', count: { $sum: 1 }, totalPayout: { $sum: '$payout_inr' } } }
+      ]),
+      TriggerEvent.countDocuments({ triggered_at: { $gt: last7Days } }),
+      TriggerEvent.countDocuments({ mass_disruption_mode: 1, triggered_at: { $gt: last24Hours } }),
     ]);
 
     const claimStats = {};
     let totalPayouts = 0;
-    claims.rows.forEach(r => { claimStats[r.status] = parseInt(r.count); totalPayouts += parseInt(r.total_payout || 0); });
+    claimsByStatus.forEach(r => { 
+      claimStats[r._id] = r.count; 
+      totalPayouts += (r.totalPayout || 0); 
+    });
+
+    const activePolicyData = activePolicies[0] || { count: 0, totalPremium: 0 };
 
     return res.json({
       success: true,
       kpis: {
-        total_workers: parseInt(workers.rows[0].count),
-        active_policies: parseInt(policies.rows[0].count),
-        total_premium_collected: parseInt(policies.rows[0].total_premium || 0),
+        total_workers: workerCount,
+        active_policies: activePolicyData.count,
+        total_premium_collected: activePolicyData.totalPremium,
         total_payouts: totalPayouts,
-        loss_ratio: policies.rows[0].total_premium > 0 ? (totalPayouts / parseInt(policies.rows[0].total_premium) * 100).toFixed(1) : 0,
-        triggers_this_week: parseInt(triggers.rows[0].count),
+        loss_ratio: activePolicyData.totalPremium > 0 ? (totalPayouts / activePolicyData.totalPremium * 100).toFixed(1) : 0,
+        triggers_this_week: triggerCount,
         claims_by_status: claimStats,
+        mass_disruption_active: massDisruptionCount > 0,
       },
     });
   } catch (err) {
-    // Demo KPIs
-    res.json({
-      success: true,
-      kpis: {
-        total_workers: 1247,
-        active_policies: 892,
-        total_premium_collected: 43708,
-        total_payouts: 28640,
-        loss_ratio: '65.5',
-        triggers_this_week: 14,
-        claims_by_status: { approved: 156, soft_hold: 12, flagged: 4, rejected: 2 },
-      },
-      demo: true,
-    });
+    console.error('[ADMIN] Dashboard error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch dashboard data' });
   }
 });
 
@@ -60,28 +79,38 @@ router.get('/dashboard', authenticate, async (req, res) => {
  */
 router.get('/loss-ratio', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT DATE_TRUNC('week', p.week_start) as week,
-             SUM(p.premium_inr) as premiums,
-             COALESCE(SUM(c.payout_inr), 0) as payouts
-      FROM policies p
-      LEFT JOIN claims c ON c.policy_id = p.id AND c.status = 'approved'
-      GROUP BY DATE_TRUNC('week', p.week_start)
-      ORDER BY week DESC LIMIT 8
-    `);
-    return res.json({ success: true, data: result.rows });
+    const data = await Policy.aggregate([
+      {
+        $lookup: {
+          from: 'claims',
+          localField: '_id',
+          foreignField: 'policy_id',
+          as: 'claims'
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: { $dateTrunc: { date: "$period.week_start", unit: "week" } } } },
+          premiums: { $sum: "$premium_inr" },
+          payouts: {
+            $sum: {
+              $reduce: {
+                input: "$claims",
+                initialValue: 0,
+                in: { $add: ["$$value", { $cond: [{ $eq: ["$$this.status", "approved"] }, "$$this.payout.amount_inr", 0] }] }
+              }
+            }
+          }
+        }
+      },
+      { $sort: { _id: -1 } },
+      { $limit: 8 },
+      { $project: { week: "$_id", premiums: 1, payouts: 1, _id: 0 } }
+    ]);
+    return res.json({ success: true, data });
   } catch (err) {
-    // Demo trend data
-    const weeks = [];
-    for (let i = 7; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i * 7);
-      weeks.push({
-        week: d.toISOString().split('T')[0],
-        premiums: Math.round(35000 + Math.random() * 15000),
-        payouts: Math.round(18000 + Math.random() * 20000),
-      });
-    }
-    res.json({ success: true, data: weeks, demo: true });
+    console.error('[ADMIN] Loss ratio error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch loss ratio data' });
   }
 });
 
@@ -91,26 +120,31 @@ router.get('/loss-ratio', authenticate, async (req, res) => {
  */
 router.get('/fraud-queue', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT c.*, w.name, w.phone, w.zone_id, w.platform, t.trigger_type, t.triggered_at, t.threshold_value
-      FROM claims c
-      JOIN workers w ON w.id = c.worker_id
-      LEFT JOIN trigger_events t ON t.id = c.trigger_id
-      WHERE c.status IN ('flagged', 'soft_hold')
-      ORDER BY c.trust_score ASC, c.created_at DESC
-      LIMIT 50
-    `);
-    return res.json({ success: true, queue: result.rows });
+    const queue = await Claim.find({ status: { $in: ['flagged', 'soft_hold'] } })
+      .populate('worker_id')
+      .populate('trigger_id')
+      .sort({ 'trust_assessment.score': 1, created_at: -1 })
+      .limit(50);
+    
+    const formattedQueue = queue.map(c => ({
+      ...c.toObject(),
+      id: c._id,
+      name: c.worker_id?.name,
+      phone: c.worker_id?.phone,
+      zone_id: c.worker_id?.zone_id,
+      platform: c.worker_id?.platform,
+      trigger_type: c.trigger_id?.trigger_type,
+      triggered_at: c.trigger_id?.triggered_at,
+      threshold_value: c.trigger_id?.threshold_value,
+      payout_inr: c.payout?.amount_inr,
+      trust_score: c.trust_assessment?.score,
+      trust_signals: c.trust_assessment?.signals
+    }));
+
+    return res.json({ success: true, queue: formattedQueue });
   } catch (err) {
-    // Demo fraud queue
-    res.json({
-      success: true,
-      queue: [
-        { id: 'fq-1', name: 'Suspect Worker A', phone: '9876543210', zone_id: 'KOR-4B', trigger_type: 'rain', trust_score: 35, status: 'flagged', payout_inr: 300, created_at: new Date().toISOString(), trust_signals: { gps_jitter: 0.2, network_match: 0.3, signal_strength: 0.5, accelerometer: 0.1, zone_history: 0.4, platform_active: 0.3 } },
-        { id: 'fq-2', name: 'Worker B', phone: '9876543211', zone_id: 'HSR-2A', trigger_type: 'rain', trust_score: 52, status: 'soft_hold', payout_inr: 300, created_at: new Date().toISOString(), trust_signals: { gps_jitter: 0.6, network_match: 0.5, signal_strength: 0.4, accelerometer: 0.7, zone_history: 0.5, platform_active: 0.6 } },
-      ],
-      demo: true,
-    });
+    console.error('[ADMIN] Fraud queue error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch fraud queue' });
   }
 });
 
@@ -120,32 +154,39 @@ router.get('/fraud-queue', authenticate, async (req, res) => {
  */
 router.get('/zone-analytics', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT w.zone_id,
-             COUNT(DISTINCT w.id) as workers,
-             COUNT(DISTINCT p.id) as policies,
-             COUNT(DISTINCT c.id) as claims,
-             COALESCE(SUM(c.payout_inr), 0) as total_payouts,
-             COALESCE(AVG(c.trust_score), 0) as avg_trust
-      FROM workers w
-      LEFT JOIN policies p ON p.worker_id = w.id AND p.status = 'active'
-      LEFT JOIN claims c ON c.worker_id = w.id
-      GROUP BY w.zone_id
-    `);
-    return res.json({ success: true, zones: result.rows });
+    const zones = await Worker.aggregate([
+      {
+        $lookup: {
+          from: 'policies',
+          localField: '_id',
+          foreignField: 'worker_id',
+          as: 'policies'
+        }
+      },
+      {
+        $lookup: {
+          from: 'claims',
+          localField: '_id',
+          foreignField: 'worker_id',
+          as: 'claims'
+        }
+      },
+      {
+        $group: {
+          _id: "$zone_id",
+          workers: { $sum: 1 },
+          policies: { $sum: { $size: { $filter: { input: "$policies", as: "p", cond: { $eq: ["$$p.status", "active"] } } } } },
+          claims: { $sum: { $size: "$claims" } },
+          total_payouts: { $sum: { $reduce: { input: "$claims", initialValue: 0, in: { $add: ["$$value", { $ifNull: ["$$this.payout.amount_inr", 0] }] } } } },
+          avg_trust: { $avg: { $reduce: { input: "$claims", initialValue: 0, in: { $add: ["$$value", { $ifNull: ["$$this.trust_assessment.score", 0] }] } } } }
+        }
+      },
+      { $project: { zone_id: "$_id", workers: 1, policies: 1, claims: 1, total_payouts: 1, avg_trust: 1, _id: 0 } }
+    ]);
+    return res.json({ success: true, zones });
   } catch (err) {
-    // Demo zone analytics
-    const zones = [
-      { zone_id: 'KOR-4B', workers: 186, policies: 142, claims: 45, total_payouts: 14400, avg_trust: 76 },
-      { zone_id: 'HSR-2A', workers: 154, policies: 118, claims: 32, total_payouts: 10240, avg_trust: 79 },
-      { zone_id: 'BTM-1C', workers: 98, policies: 72, claims: 18, total_payouts: 5760, avg_trust: 82 },
-      { zone_id: 'IND-3D', workers: 122, policies: 95, claims: 22, total_payouts: 7040, avg_trust: 81 },
-      { zone_id: 'WHT-5A', workers: 210, policies: 168, claims: 58, total_payouts: 18560, avg_trust: 72 },
-      { zone_id: 'MG-1B', workers: 145, policies: 112, claims: 28, total_payouts: 8960, avg_trust: 78 },
-      { zone_id: 'DL-CP', workers: 178, policies: 134, claims: 42, total_payouts: 13440, avg_trust: 74 },
-      { zone_id: 'DL-RK', workers: 195, policies: 156, claims: 62, total_payouts: 19840, avg_trust: 70 },
-    ];
-    res.json({ success: true, zones, demo: true });
+    console.error('[ADMIN] Zone analytics error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch zone analytics' });
   }
 });
 
@@ -155,23 +196,23 @@ router.get('/zone-analytics', authenticate, async (req, res) => {
  */
 router.get('/payout-trend', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT DATE(paid_at) as date, SUM(payout_inr) as amount, COUNT(*) as count
-      FROM claims WHERE status = 'approved' AND paid_at > NOW() - INTERVAL '14 days'
-      GROUP BY DATE(paid_at) ORDER BY date
-    `);
-    return res.json({ success: true, data: result.rows });
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+    const data = await Claim.aggregate([
+      { $match: { status: 'approved', 'payout.paid_at': { $gt: fourteenDaysAgo } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$payout.paid_at" } },
+          amount: { $sum: "$payout.amount_inr" },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } },
+      { $project: { date: "$_id", amount: 1, count: 1, _id: 0 } }
+    ]);
+    return res.json({ success: true, data });
   } catch (err) {
-    const days = [];
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i);
-      days.push({
-        date: d.toISOString().split('T')[0],
-        amount: Math.round(1500 + Math.random() * 5000),
-        count: Math.round(5 + Math.random() * 20),
-      });
-    }
-    res.json({ success: true, data: days, demo: true });
+    console.error('[ADMIN] Payout trend error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch payout trend' });
   }
 });
 
@@ -181,27 +222,55 @@ router.get('/payout-trend', authenticate, async (req, res) => {
  */
 router.get('/trigger-history', authenticate, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT t.*,
-             COUNT(c.id) as total_claims,
-             COUNT(CASE WHEN c.status = 'approved' THEN 1 END) as approved_claims,
-             SUM(CASE WHEN c.status = 'approved' THEN c.payout_inr ELSE 0 END) as total_payout
-      FROM trigger_events t
-      LEFT JOIN claims c ON c.trigger_id = t.id
-      GROUP BY t.id
-      ORDER BY t.triggered_at DESC LIMIT 20
-    `);
-    return res.json({ success: true, triggers: result.rows });
+    const triggers = await TriggerEvent.aggregate([
+      {
+        $lookup: {
+          from: 'claims',
+          localField: '_id',
+          foreignField: 'trigger_id',
+          as: 'claims'
+        }
+      },
+      {
+        $project: {
+          zone_id: 1,
+          trigger_type: 1,
+          threshold_value: 1,
+          triggered_at: 1,
+          mass_disruption_mode: 1,
+          total_claims: { $size: "$claims" },
+          approved_claims: { $size: { $filter: { input: "$claims", as: "c", cond: { $eq: ["$$c.status", "approved"] } } } },
+          total_payout: { $sum: "$claims.payout.amount_inr" }
+        }
+      },
+      { $sort: { triggered_at: -1 } },
+      { $limit: 20 }
+    ]);
+    return res.json({ success: true, triggers });
   } catch (err) {
-    res.json({
-      success: true,
-      triggers: [
-        { id: 'th-1', zone_id: 'KOR-4B', trigger_type: 'rain', threshold_value: 18.4, triggered_at: new Date(Date.now() - 3600000).toISOString(), total_claims: 15, approved_claims: 12, total_payout: 3840 },
-        { id: 'th-2', zone_id: 'DL-RK', trigger_type: 'aqi', threshold_value: 450, triggered_at: new Date(Date.now() - 86400000).toISOString(), total_claims: 22, approved_claims: 19, total_payout: 6080 },
-        { id: 'th-3', zone_id: 'WHT-5A', trigger_type: 'heat', threshold_value: 47.2, triggered_at: new Date(Date.now() - 172800000).toISOString(), total_claims: 18, approved_claims: 16, total_payout: 5120 },
-      ],
-      demo: true,
-    });
+    console.error('[ADMIN] Trigger history error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch trigger history' });
+  }
+});
+
+/**
+ * GET /api/admin/predictive-risk
+ * Predictive risk analysis using weather forecast and historical claim rates
+ */
+router.get('/predictive-risk', authenticate, async (req, res) => {
+  try {
+    // Demo data for predictive risk as weather APIs are external
+    const zones = ['KOR-4B', 'HSR-2A', 'BTM-1C', 'IND-3D', 'WHT-5A', 'MG-1B', 'DL-CP', 'DL-RK'];
+    const forecast = zones.map(z => ({
+      zone_id: z,
+      predicted_risk: Math.round(10 + Math.random() * 80),
+      likely_trigger: Math.random() > 0.7 ? 'rain' : 'none',
+      confidence: (0.6 + Math.random() * 0.3).toFixed(2)
+    }));
+    
+    return res.json({ success: true, forecast });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch predictive risk' });
   }
 });
 

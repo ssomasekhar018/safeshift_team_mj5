@@ -1,16 +1,18 @@
 import React from 'react';
+import { useGlassmorphism } from '../hooks/useGlassmorphism';
 
 /**
  * PayoutRow — Displays a single payout entry
  * Used in claim history and payout notification views
  */
 export default function PayoutRow({ claim, index = 0 }) {
+  const { getGlassClass } = useGlassmorphism();
   const triggerIcons = { rain: '🌧️', aqi: '💨', heat: '🔥', closure: '🚧', shutdown: '⚠️' };
   const isApproved = claim.status === 'approved';
 
   return (
     <div
-      className={`trigger-card animate-slide-in stagger-${Math.min(index + 1, 6)}`}
+      className={`${getGlassClass('glass-list-item')} animate-slide-in stagger-${Math.min(index + 1, 6)}`}
       style={{
         borderLeft: `3px solid ${isApproved ? 'var(--accent-success)' : claim.status === 'flagged' ? 'var(--accent-danger)' : 'var(--accent-warning)'}`,
       }}

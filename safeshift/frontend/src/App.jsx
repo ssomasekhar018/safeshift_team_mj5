@@ -1,43 +1,27 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Link, useNavigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
+import { ThemeProvider } from './context/ThemeContext';
+import AppShell from './components/AppShell';
+import ThreeBackground from './components/ThreeBackground';
+import { AnimatedPresence } from './components/AnimatedWrapper';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Onboarding from './pages/Onboarding';
+import ConsentScreen from './pages/ConsentScreen';
 import WorkerDashboard from './pages/WorkerDashboard';
 import PolicyShop from './pages/PolicyShop';
 import ClaimHistory from './pages/ClaimHistory';
 import PayoutNotification from './pages/PayoutNotification';
+import Profile from './pages/Profile';
 import AdminDashboard from './pages/AdminDashboard';
+import EnhancedGlassDemo from './components/EnhancedGlassDemo';
 import { getMe } from './services/api';
 
-function Navbar({ user, onLogout }) {
-  const location = useLocation();
-  const isAdmin = user?.role === 'admin';
+// Initialize glassmorphism compatibility system
+import './utils/glassmorphismCompat';
 
-  return (
-    <nav className="navbar">
-      <Link to="/" className="navbar-brand">
-        <span style={{ fontSize: '1.5rem' }}>🛡️</span>
-        <span className="navbar-logo">SafeShift</span>
-      </Link>
-      <div className="navbar-links">
-        {isAdmin ? (
-          <>
-            <Link to="/admin" className={`nav-link ${location.pathname === '/admin' ? 'active' : ''}`}>Dashboard</Link>
-          </>
-        ) : (
-          <>
-            <Link to="/dashboard" className={`nav-link ${location.pathname === '/dashboard' ? 'active' : ''}`}>Home</Link>
-            <Link to="/policies" className={`nav-link ${location.pathname === '/policies' ? 'active' : ''}`}>Plans</Link>
-            <Link to="/claims" className={`nav-link ${location.pathname === '/claims' ? 'active' : ''}`}>Claims</Link>
-            <Link to="/payouts" className={`nav-link ${location.pathname === '/payouts' ? 'active' : ''}`}>Payouts</Link>
-          </>
-        )}
-        <button className="nav-link" onClick={onLogout} style={{ color: 'var(--accent-danger)' }}>Logout</button>
-      </div>
-    </nav>
-  );
-}
+// Initialize theme enhancement system
+import './utils/themeEnhancer';
 
 function ProtectedRoute({ children, user, requiredRole }) {
   if (!user) return <Navigate to="/" replace />;
@@ -45,7 +29,18 @@ function ProtectedRoute({ children, user, requiredRole }) {
   return children;
 }
 
-export default function App() {
+/**
+ * WorkerShell — Wraps worker pages in the AppShell (PageHeader + BottomTabBar)
+ */
+function WorkerShell({ children, onLogout }) {
+  return (
+    <AppShell onLogout={onLogout}>
+      {children}
+    </AppShell>
+  );
+}
+
+function AppContent() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -67,51 +62,133 @@ export default function App() {
     localStorage.setItem('safeshift_user', JSON.stringify(userData));
   };
 
+  const handleConsentGiven = () => {
+    // Update user state to mark consent as given
+    const updatedUser = { ...user, consent_given: true };
+    setUser(updatedUser);
+    localStorage.setItem('safeshift_user', JSON.stringify(updatedUser));
+  };
+
   const handleLogout = () => {
     setUser(null);
     localStorage.removeItem('safeshift_token');
     localStorage.removeItem('safeshift_user');
   };
 
+  const location = useLocation();
+
   if (loading) {
     return (
-      <div className="loading-spinner" style={{ minHeight: '100vh' }}>
-        <div className="spinner"></div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="spinner" />
       </div>
     );
   }
 
   return (
-    <BrowserRouter>
-      <div className="app-container">
-        {user && <Navbar user={user} onLogout={handleLogout} />}
-        <Routes>
-          <Route path="/" element={
-            user ? (
-              <Navigate to={user.role === 'admin' ? '/admin' : '/dashboard'} replace />
+    <AnimatedPresence mode="wait">
+      <Routes location={location} key={location.pathname.split('/')[1] || 'root'}>
+        <Route path="/" element={
+          user ? (
+            <Navigate to={user.role === 'admin' ? '/admin' : '/dashboard'} replace />
+          ) : (
+            <Login onLogin={handleLogin} />
+          )
+        } />
+        <Route path="/register" element={<Register onLogin={handleLogin} />} />
+        <Route path="/onboarding" element={<Onboarding onLogin={handleLogin} />} />
+        <Route path="/consent" element={
+          <ProtectedRoute user={user}>
+            <ConsentScreen onConsentGiven={handleConsentGiven} user={user} />
+          </ProtectedRoute>
+        } />
+
+        {/* Worker Routes — wrapped in AppShell */}
+        <Route path="/dashboard" element={
+          <ProtectedRoute user={user}>
+            {user && user.role === 'worker' && !user.consent_given ? (
+              <Navigate to="/consent" replace />
             ) : (
-              <Login onLogin={handleLogin} />
-            )
-          } />
-          <Route path="/register" element={<Register onLogin={handleLogin} />} />
-          <Route path="/onboarding" element={<Onboarding onLogin={handleLogin} />} />
-          <Route path="/dashboard" element={
-            <ProtectedRoute user={user}><WorkerDashboard user={user} /></ProtectedRoute>
-          } />
-          <Route path="/policies" element={
-            <ProtectedRoute user={user}><PolicyShop user={user} /></ProtectedRoute>
-          } />
-          <Route path="/claims" element={
-            <ProtectedRoute user={user}><ClaimHistory user={user} /></ProtectedRoute>
-          } />
-          <Route path="/payouts" element={
-            <ProtectedRoute user={user}><PayoutNotification user={user} /></ProtectedRoute>
-          } />
-          <Route path="/admin" element={
-            <ProtectedRoute user={user} requiredRole="admin"><AdminDashboard user={user} /></ProtectedRoute>
-          } />
-        </Routes>
-      </div>
-    </BrowserRouter>
+              <WorkerShell onLogout={handleLogout}>
+                <WorkerDashboard user={user} />
+              </WorkerShell>
+            )}
+          </ProtectedRoute>
+        } />
+        <Route path="/policies" element={
+          <ProtectedRoute user={user}>
+            {user && user.role === 'worker' && !user.consent_given ? (
+              <Navigate to="/consent" replace />
+            ) : (
+              <WorkerShell onLogout={handleLogout}>
+                <PolicyShop user={user} />
+              </WorkerShell>
+            )}
+          </ProtectedRoute>
+        } />
+        <Route path="/claims" element={
+          <ProtectedRoute user={user}>
+            {user && user.role === 'worker' && !user.consent_given ? (
+              <Navigate to="/consent" replace />
+            ) : (
+              <WorkerShell onLogout={handleLogout}>
+                <ClaimHistory user={user} />
+              </WorkerShell>
+            )}
+          </ProtectedRoute>
+        } />
+        <Route path="/payouts" element={
+          <ProtectedRoute user={user}>
+            {user && user.role === 'worker' && !user.consent_given ? (
+              <Navigate to="/consent" replace />
+            ) : (
+              <WorkerShell onLogout={handleLogout}>
+                <PayoutNotification user={user} />
+              </WorkerShell>
+            )}
+          </ProtectedRoute>
+        } />
+        <Route path="/profile" element={
+          <ProtectedRoute user={user}>
+            <WorkerShell onLogout={handleLogout}>
+              <Profile user={user} onLogout={handleLogout} />
+            </WorkerShell>
+          </ProtectedRoute>
+        } />
+
+        {/* Admin Route — no AppShell, admin has its own layout */}
+        <Route path="/admin" element={
+          <ProtectedRoute user={user} requiredRole="admin">
+            <AdminDashboard user={user} onLogout={handleLogout} />
+          </ProtectedRoute>
+        } />
+
+        {/* Enhanced Glass Demo Route — for development and testing */}
+        <Route path="/glass-demo" element={<EnhancedGlassDemo />} />
+      </Routes>
+    </AnimatedPresence>
+  );
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <BrowserRouter
+        future={{
+          v7_startTransition: true,
+          v7_relativeSplatPath: true,
+        }}
+      >
+        <div className="relative min-h-screen">
+          {/* Three.js 3D Background */}
+          <ThreeBackground />
+          
+          {/* Application Content */}
+          <div className="relative z-10">
+            <AppContent />
+          </div>
+        </div>
+      </BrowserRouter>
+    </ThemeProvider>
   );
 }

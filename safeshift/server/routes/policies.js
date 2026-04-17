@@ -2,12 +2,17 @@
  * SafeShift Policy Routes
  * Weekly policy creation, renewal, cancellation
  * AI premium calculation via FastAPI ML service
+ * 
+ * MongoDB Migration: All database operations now use Mongoose models
  */
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const { query } = require('../db/init');
+const { connectMongoDB, getModels } = require('../db/mongodb');
 const { authenticate } = require('../middleware/auth');
+
+// MongoDB models - will be initialized after connection
+let Worker, Policy;
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
@@ -24,6 +29,9 @@ const TIER_CONFIG = {
  */
 router.get('/quote', authenticate, async (req, res) => {
   const zone_id = req.query.zone_id || req.user.zone_id || 'KOR-4B';
+  let isAIScored = false;
+  let cityTier = 'tier_2'; // Default
+  let seasonFactor = 1.0;
 
   try {
     // Try ML service for dynamic pricing
@@ -34,33 +42,45 @@ router.get('/quote', authenticate, async (req, res) => {
       zone_density: 120,
       infrastructure_score: 65,
       forecast_severity: 0.4,
+      city: 'Bangalore', // Default city, could be derived from zone_id
     }, { timeout: 3000 });
 
     const riskScore = mlResponse.data.risk_score || 50;
-    const premiums = calculateDynamicPremiums(riskScore);
+    cityTier = mlResponse.data.city_tier || 'tier_2';
+    seasonFactor = mlResponse.data.season_factor || 1.0;
+    const premiums = calculateDynamicPremiums(riskScore, seasonFactor);
+    isAIScored = true;
+
+    console.log(`[POLICY] ✅ ML service responded: risk=${riskScore}, city_tier=${cityTier}, season_factor=${seasonFactor}`);
 
     return res.json({
       success: true,
       zone_id,
       risk_score: riskScore,
       risk_level: riskScore > 65 ? 'high' : riskScore > 30 ? 'medium' : 'low',
+      city_tier: cityTier,
+      season_factor: seasonFactor,
       tiers: premiums,
       model_version: mlResponse.data.model_version || 'v2.0',
+      ai_scored: true,
       valid_until: getNextSunday(),
     });
   } catch (err) {
     // ML service unavailable — use rule-based fallback
-    console.warn('[POLICY] ML service unavailable, using rule-based pricing');
+    console.warn(`[POLICY] ⚠️ ML service unavailable (${err.message}), using rule-based pricing`);
     const riskScore = getFallbackRiskScore(zone_id);
-    const premiums = calculateDynamicPremiums(riskScore);
+    const premiums = calculateDynamicPremiums(riskScore, seasonFactor);
 
     return res.json({
       success: true,
       zone_id,
       risk_score: riskScore,
       risk_level: riskScore > 65 ? 'high' : riskScore > 30 ? 'medium' : 'low',
+      city_tier: cityTier,
+      season_factor: seasonFactor,
       tiers: premiums,
       model_version: 'fallback-v1',
+      ai_scored: false,
       valid_until: getNextSunday(),
     });
   }
@@ -88,16 +108,22 @@ router.post('/create', authenticate, async (req, res) => {
   weekEnd.setDate(weekEnd.getDate() + 6);
 
   try {
-    const result = await query(
-      `INSERT INTO policies (worker_id, tier, premium_inr, coverage_inr, week_start, week_end, ai_risk_score, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
-       RETURNING *`,
-      [workerId, tier, selectedTier.premium, selectedTier.coverage, weekStart.toISOString().split('T')[0], weekEnd.toISOString().split('T')[0], riskScore]
-    );
+    const policy = await Policy.create({
+      worker_id: workerId,
+      tier,
+      premium_inr: selectedTier.premium,
+      coverage_inr: selectedTier.coverage,
+      period: {
+        week_start: weekStart,
+        week_end: weekEnd
+      },
+      ai_risk_score: riskScore,
+      status: 'active'
+    });
 
     res.json({
       success: true,
-      policy: result.rows[0],
+      policy: policy.toObject(),
       message: `${tier.charAt(0).toUpperCase() + tier.slice(1)} plan activated! Coverage: ₹${selectedTier.coverage}/week`,
     });
   } catch (err) {
@@ -109,8 +135,10 @@ router.post('/create', authenticate, async (req, res) => {
       tier,
       premium_inr: selectedTier.premium,
       coverage_inr: selectedTier.coverage,
-      week_start: weekStart.toISOString().split('T')[0],
-      week_end: weekEnd.toISOString().split('T')[0],
+      period: {
+        week_start: weekStart.toISOString(),
+        week_end: weekEnd.toISOString()
+      },
       ai_risk_score: riskScore,
       status: 'active',
       created_at: new Date().toISOString(),
@@ -125,12 +153,13 @@ router.post('/create', authenticate, async (req, res) => {
  */
 router.get('/active', authenticate, async (req, res) => {
   try {
-    const result = await query(
-      `SELECT * FROM policies WHERE worker_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1`,
-      [req.user.id]
-    );
-    if (result.rows.length > 0) {
-      return res.json({ success: true, policy: result.rows[0] });
+    const policy = await Policy.findOne({
+      worker_id: req.user.id,
+      status: 'active'
+    }).sort({ created_at: -1 });
+
+    if (policy) {
+      return res.json({ success: true, policy: policy.toObject() });
     }
   } catch (err) {
     // fallback
@@ -144,11 +173,11 @@ router.get('/active', authenticate, async (req, res) => {
  */
 router.get('/history', authenticate, async (req, res) => {
   try {
-    const result = await query(
-      `SELECT * FROM policies WHERE worker_id = $1 ORDER BY created_at DESC LIMIT 20`,
-      [req.user.id]
-    );
-    return res.json({ success: true, policies: result.rows });
+    const policies = await Policy.find({
+      worker_id: req.user.id
+    }).sort({ created_at: -1 }).limit(20);
+
+    return res.json({ success: true, policies: policies.map(p => p.toObject()) });
   } catch (err) {
     // fallback
   }
@@ -161,12 +190,14 @@ router.get('/history', authenticate, async (req, res) => {
  */
 router.post('/:id/cancel', authenticate, async (req, res) => {
   try {
-    const result = await query(
-      `UPDATE policies SET status = 'cancelled' WHERE id = $1 AND worker_id = $2 RETURNING *`,
-      [req.params.id, req.user.id]
+    const policy = await Policy.findOneAndUpdate(
+      { _id: req.params.id, worker_id: req.user.id },
+      { status: 'cancelled' },
+      { new: true }
     );
-    if (result.rows.length > 0) {
-      return res.json({ success: true, policy: result.rows[0], message: 'Policy cancelled. No penalty applied.' });
+
+    if (policy) {
+      return res.json({ success: true, policy: policy.toObject(), message: 'Policy cancelled. No penalty applied.' });
     }
   } catch (err) {
     // fallback
@@ -176,9 +207,8 @@ router.post('/:id/cancel', authenticate, async (req, res) => {
 
 // ─── Helper Functions ─────────────────────────────────────────────────────────
 
-function calculateDynamicPremiums(riskScore) {
+function calculateDynamicPremiums(riskScore, seasonFactor = 1.0) {
   const multiplier = 0.8 + (riskScore / 100) * 1.7; // 0.8–2.5 range
-  const seasonFactor = getSeasonFactor();
 
   return {
     basic: {
@@ -238,5 +268,21 @@ function getNextSunday() {
   sunday.setDate(monday.getDate() - 1);
   return sunday.toISOString();
 }
+
+// Initialize MongoDB models on router load
+async function initializeModels() {
+  try {
+    await connectMongoDB();
+    const models = getModels();
+    Worker = models.Worker;
+    Policy = models.Policy;
+    console.log('[POLICIES] MongoDB models initialized');
+  } catch (err) {
+    console.error('[POLICIES] Failed to initialize MongoDB models:', err.message);
+  }
+}
+
+// Initialize on module load
+initializeModels();
 
 module.exports = router;

@@ -1,13 +1,16 @@
 import React from 'react';
+import { useGlassmorphism } from '../hooks/useGlassmorphism';
 
 /**
  * CoverageBanner — Shows current coverage status prominently
  * Used on Worker Dashboard and Policy Shop pages
  */
 export default function CoverageBanner({ policy, riskLevel, zone }) {
+  const { getGlassClass } = useGlassmorphism();
+
   if (policy) {
     return (
-      <div className="glass-card animate-fade-up" style={{
+      <div className={`${getGlassClass('glass-card')} animate-fade-up`} style={{
         background: 'linear-gradient(135deg, rgba(16,185,129,0.12), rgba(6,182,212,0.08))',
         border: '1px solid rgba(16,185,129,0.2)',
         textAlign: 'center',
@@ -35,7 +38,7 @@ export default function CoverageBanner({ policy, riskLevel, zone }) {
   }
 
   return (
-    <div className="glass-card animate-fade-up" style={{
+    <div className={`${getGlassClass('glass-card')} animate-fade-up`} style={{
       background: 'linear-gradient(135deg, rgba(245,158,11,0.08), rgba(239,68,68,0.05))',
       border: '1px solid rgba(245,158,11,0.2)',
       textAlign: 'center',

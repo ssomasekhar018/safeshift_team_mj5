@@ -2,14 +2,21 @@
  * SafeShift Claims Routes
  * Full parametric claim pipeline:
  * Trigger → Fraud Check → Auto-Approve / Soft-Hold / Review → Payout
+ * 
+ * MongoDB Migration: All database operations now use Mongoose models
  */
 const express = require('express');
 const router = express.Router();
-const { query: dbQuery } = require('../db/init');
+const axios = require('axios');
+const { connectMongoDB, getModels } = require('../db/mongodb');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 const FraudScorer = require('../services/fraudScorer');
 const PayoutService = require('../services/payoutService');
 
+// MongoDB models - will be initialized after connection
+let Worker, Policy, Claim, TriggerEvent;
+
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const fraudScorer = new FraudScorer();
 const payoutService = new PayoutService();
 
@@ -26,33 +33,64 @@ router.post('/process', async (req, res) => {
 
   try {
     // Find all active policies in the affected zone
-    const policies = await query(
-      `SELECT p.*, w.id as worker_id, w.phone, w.upi_id, w.device_hash,
-              w.last_gps_lat, w.last_gps_lon, w.trust_history, w.shift_start, w.shift_end
-       FROM policies p
-       JOIN workers w ON w.id = p.worker_id
-       WHERE w.zone_id = $1 AND p.status = 'active'
-       AND CURRENT_DATE BETWEEN p.week_start AND p.week_end`,
-      [zone_id]
-    );
+    const policies = await Policy.find({
+      status: 'active',
+      'period.week_start': { $lte: new Date() },
+      'period.week_end': { $gte: new Date() }
+    }).populate('worker_id', 'phone upi_id device_hash last_gps trust_history shift_start shift_end zone_id');
 
-    const results = { approved: 0, soft_hold: 0, flagged: 0, total: policies.rows.length };
+    // Filter by zone
+    const zonePolicies = policies.filter(p => p.worker_id.zone_id === zone_id);
 
-    for (const policy of policies.rows) {
+    const results = { approved: 0, soft_hold: 0, flagged: 0, total: zonePolicies.length };
+
+    for (const policy of zonePolicies) {
+      const worker = policy.worker_id;
+      
       // Check if worker is in active hours
       const now = new Date();
       const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 
-      // Run 6-signal fraud check
-      const trustResult = await fraudScorer.score({
-        workerId: policy.worker_id,
-        deviceHash: policy.device_hash,
-        gpsLat: policy.last_gps_lat,
-        gpsLon: policy.last_gps_lon,
-        zoneId: zone_id,
-        triggerType: trigger_type,
-        trustHistory: policy.trust_history,
-      });
+      // Run 6-signal fraud check via ML service
+      let trustResult;
+      let isMLScored = false;
+      
+      try {
+        // Try ML service fraud check first
+        const mlResponse = await axios.post(`${ML_SERVICE_URL}/fraud/check`, {
+          worker_id: worker._id.toString(),
+          gps_lat: worker.last_gps?.lat || 12.9352,
+          gps_lon: worker.last_gps?.lon || 77.6245,
+          zone_id: zone_id,
+          device_hash: worker.device_hash || '',
+          signal_strength: -65.0, // Default signal strength
+          claims_24h: 1, // Could be calculated from recent claims
+          accelerometer_active: true, // Default assumption
+        }, { timeout: 3000 });
+
+        trustResult = {
+          score: mlResponse.data.trust_score,
+          signals: mlResponse.data.signals,
+          flags: mlResponse.data.flags,
+          isolation_forest_score: mlResponse.data.isolation_forest_score,
+        };
+        isMLScored = true;
+        console.log(`[CLAIMS] ✅ ML fraud check for worker ${worker._id}: score=${trustResult.score}, isolation=${trustResult.isolation_forest_score}`);
+        
+      } catch (mlErr) {
+        // Fallback to local fraud scorer
+        console.warn(`[CLAIMS] ⚠️ ML fraud check failed (${mlErr.message}), using fallback scorer`);
+        trustResult = await fraudScorer.score({
+          workerId: worker._id.toString(),
+          deviceHash: worker.device_hash,
+          gpsLat: worker.last_gps?.lat,
+          gpsLon: worker.last_gps?.lon,
+          zoneId: zone_id,
+          triggerType: trigger_type,
+          trustHistory: worker.trust_history,
+        });
+        isMLScored = false;
+      }
 
       const perEventPayout = Math.round(policy.coverage_inr / 3);
       let status = 'pending';
@@ -70,34 +108,40 @@ router.post('/process', async (req, res) => {
 
       // Create claim record
       try {
-        const claim = await query(
-          `INSERT INTO claims (worker_id, policy_id, trigger_id, trust_score, trust_signals, status, payout_inr)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT (worker_id, trigger_id) DO NOTHING
-           RETURNING *`,
-          [policy.worker_id, policy.id, trigger_id, trustResult.score, JSON.stringify(trustResult.signals), status, perEventPayout]
-        );
+        const claim = await Claim.create({
+          worker_id: worker._id,
+          policy_id: policy._id,
+          trigger_id,
+          trust_assessment: {
+            score: trustResult.score,
+            signals: trustResult.signals
+          },
+          status,
+          payout: {
+            amount_inr: perEventPayout
+          }
+        });
 
         // Auto-approve: send payout immediately
-        if (status === 'approved' && claim.rows.length > 0) {
+        if (status === 'approved') {
           try {
             const payRef = await payoutService.sendUPI({
-              upiId: policy.upi_id,
+              upiId: worker.upi_id,
               amount: perEventPayout,
-              workerId: policy.worker_id,
-              claimId: claim.rows[0].id,
+              workerId: worker._id.toString(),
+              claimId: claim._id.toString(),
             });
 
-            await query(
-              `UPDATE claims SET payout_ref = $1, paid_at = NOW() WHERE id = $2`,
-              [payRef, claim.rows[0].id]
-            );
+            await Claim.findByIdAndUpdate(claim._id, {
+              'payout.reference': payRef,
+              'payout.paid_at': new Date()
+            });
           } catch (payErr) {
-            console.error(`[CLAIMS] Payout failed for worker ${policy.worker_id}:`, payErr.message);
+            console.error(`[CLAIMS] Payout failed for worker ${worker._id}:`, payErr.message);
           }
         }
       } catch (claimErr) {
-        if (claimErr.code !== '23505') { // Ignore duplicate claim errors
+        if (claimErr.code !== 11000) { // Ignore duplicate key errors
           console.error('[CLAIMS] Claim insert error:', claimErr.message);
         }
       }
@@ -122,15 +166,13 @@ router.post('/process', async (req, res) => {
  */
 router.get('/my', authenticate, async (req, res) => {
   try {
-    const result = await query(
-      `SELECT c.*, t.trigger_type, t.threshold_value, t.triggered_at
-       FROM claims c
-       LEFT JOIN trigger_events t ON t.id = c.trigger_id
-       WHERE c.worker_id = $1
-       ORDER BY c.created_at DESC LIMIT 20`,
-      [req.user.id]
-    );
-    return res.json({ success: true, claims: result.rows });
+    const claims = await Claim.find({
+      worker_id: req.user.id
+    }).populate('trigger_id', 'trigger_type threshold_value triggered_at')
+      .sort({ created_at: -1 })
+      .limit(20);
+
+    return res.json({ success: true, claims: claims.map(c => c.toObject()) });
   } catch (err) {
     // Demo fallback with realistic data
     const demoClaims = [
@@ -165,22 +207,21 @@ router.get('/all', authenticate, async (req, res) => {
   const { status, zone_id, limit = 50 } = req.query;
 
   try {
-    let sqlStr = `SELECT c.*, w.name, w.phone, w.zone_id, t.trigger_type, t.triggered_at
-                 FROM claims c
-                 JOIN workers w ON w.id = c.worker_id
-                 LEFT JOIN trigger_events t ON t.id = c.trigger_id`;
-    const params = [];
-    const conditions = [];
+    const queryObj = {};
+    if (status) queryObj.status = status;
 
-    if (status) { conditions.push(`c.status = $${params.length + 1}`); params.push(status); }
-    if (zone_id) { conditions.push(`w.zone_id = $${params.length + 1}`); params.push(zone_id); }
+    let claims = await Claim.find(queryObj)
+      .populate('worker_id', 'name phone zone_id')
+      .populate('trigger_id', 'trigger_type triggered_at')
+      .sort({ created_at: -1 })
+      .limit(parseInt(limit));
 
-    if (conditions.length > 0) sqlStr += ' WHERE ' + conditions.join(' AND ');
-    sqlStr += ` ORDER BY c.created_at DESC LIMIT $${params.length + 1}`;
-    params.push(parseInt(limit));
+    // Filter by zone if specified
+    if (zone_id) {
+      claims = claims.filter(c => c.worker_id?.zone_id === zone_id);
+    }
 
-    const result = await dbQuery(sqlStr, params);
-    return res.json({ success: true, claims: result.rows });
+    return res.json({ success: true, claims: claims.map(c => c.toObject()) });
   } catch (err) {
     res.json({ success: true, claims: [], demo: true });
   }
@@ -200,23 +241,30 @@ router.post('/:id/review', authenticate, async (req, res) => {
 
   try {
     const newStatus = action === 'approve' ? 'approved' : 'rejected';
-    const result = await query(
-      `UPDATE claims SET status = $1, review_notes = $2 WHERE id = $3 RETURNING *`,
-      [newStatus, notes || `${action}d by admin`, claimId]
+    const claim = await Claim.findByIdAndUpdate(
+      claimId,
+      { status: newStatus, review_notes: notes || `${action}d by admin` },
+      { new: true }
     );
 
-    if (result.rows.length > 0 && action === 'approve') {
-      const claim = result.rows[0];
+    if (claim && action === 'approve') {
       // Process payout for approved claims
-      const worker = await query('SELECT upi_id FROM workers WHERE id = $1', [claim.worker_id]);
-      if (worker.rows.length > 0) {
-        const payRef = await payoutService.sendUPI({
-          upiId: worker.rows[0].upi_id,
-          amount: claim.payout_inr,
-          workerId: claim.worker_id,
-          claimId: claim.id,
-        });
-        await query('UPDATE claims SET payout_ref = $1, paid_at = NOW() WHERE id = $2', [payRef, claimId]);
+      const worker = await Worker.findById(claim.worker_id).select('upi_id');
+      if (worker) {
+        try {
+          const payRef = await payoutService.sendUPI({
+            upiId: worker.upi_id,
+            amount: claim.payout.amount_inr,
+            workerId: claim.worker_id.toString(),
+            claimId: claim._id.toString(),
+          });
+          await Claim.findByIdAndUpdate(claimId, {
+            'payout.reference': payRef,
+            'payout.paid_at': new Date()
+          });
+        } catch (payErr) {
+          console.error('[CLAIMS] Payout failed:', payErr.message);
+        }
       }
     }
 
@@ -234,31 +282,44 @@ router.post('/:id/recheck', async (req, res) => {
   const claimId = req.params.id;
 
   try {
-    const claim = await query(
-      `SELECT c.*, w.device_hash, w.last_gps_lat, w.last_gps_lon, w.zone_id, w.trust_history, w.upi_id
-       FROM claims c JOIN workers w ON w.id = c.worker_id
-       WHERE c.id = $1 AND c.status = 'soft_hold'`,
-      [claimId]
-    );
+    const claim = await Claim.findById(claimId)
+      .populate('worker_id', 'device_hash last_gps zone_id trust_history upi_id');
 
-    if (claim.rows.length === 0) {
+    if (!claim || claim.status !== 'soft_hold') {
       return res.json({ success: false, message: 'Claim not found or not in soft_hold' });
     }
 
-    const c = claim.rows[0];
+    const worker = claim.worker_id;
     const newScore = await fraudScorer.score({
-      workerId: c.worker_id,
-      deviceHash: c.device_hash,
-      gpsLat: c.last_gps_lat,
-      gpsLon: c.last_gps_lon,
-      zoneId: c.zone_id,
-      trustHistory: c.trust_history,
+      workerId: worker._id.toString(),
+      deviceHash: worker.device_hash,
+      gpsLat: worker.last_gps?.lat,
+      gpsLon: worker.last_gps?.lon,
+      zoneId: worker.zone_id,
+      trustHistory: worker.trust_history,
     });
 
     if (newScore.score >= 70) {
-      await query(`UPDATE claims SET status = 'approved', trust_score = $1 WHERE id = $2`, [newScore.score, claimId]);
-      const payRef = await payoutService.sendUPI({ upiId: c.upi_id, amount: c.payout_inr, workerId: c.worker_id, claimId });
-      await query(`UPDATE claims SET payout_ref = $1, paid_at = NOW() WHERE id = $2`, [payRef, claimId]);
+      await Claim.findByIdAndUpdate(claimId, { 
+        status: 'approved', 
+        'trust_assessment.score': newScore.score 
+      });
+      
+      try {
+        const payRef = await payoutService.sendUPI({ 
+          upiId: worker.upi_id, 
+          amount: claim.payout.amount_inr, 
+          workerId: worker._id.toString(), 
+          claimId 
+        });
+        await Claim.findByIdAndUpdate(claimId, {
+          'payout.reference': payRef,
+          'payout.paid_at': new Date()
+        });
+      } catch (payErr) {
+        console.error('[CLAIMS] Payout failed:', payErr.message);
+      }
+      
       return res.json({ success: true, status: 'approved', newScore: newScore.score });
     }
 
@@ -267,5 +328,23 @@ router.post('/:id/recheck', async (req, res) => {
     res.json({ success: true, message: 'Recheck processed (demo mode)', demo: true });
   }
 });
+
+// Initialize MongoDB models on router load
+async function initializeModels() {
+  try {
+    await connectMongoDB();
+    const models = getModels();
+    Worker = models.Worker;
+    Policy = models.Policy;
+    Claim = models.Claim;
+    TriggerEvent = models.TriggerEvent;
+    console.log('[CLAIMS] MongoDB models initialized');
+  } catch (err) {
+    console.error('[CLAIMS] Failed to initialize MongoDB models:', err.message);
+  }
+}
+
+// Initialize on module load
+initializeModels();
 
 module.exports = router;

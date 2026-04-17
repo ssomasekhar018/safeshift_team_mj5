@@ -36,6 +36,10 @@ build/
 # Python / ML
 # ----------------------------
 __pycache__/
+.pytest_cache/
+pytest_cache/
+.hypothesis/
+tests/
 *.py[cod]
 *$py.class
 *.pyo
@@ -98,6 +102,18 @@ safeshift/server/db/*.sqlite
 safeshift/server/db/*.db
 *.sqlite
 *.db
+
+# ----------------------------
+# Tests (User request to ignore)
+# ----------------------------
+**/__tests__/
+**/test/
+**/*.test.js
+**/*.test.jsx
+**/*.spec.js
+**/*.spec.jsx
+**/*.test.py
+**/*.spec.py
 
 # Logs
 logs/

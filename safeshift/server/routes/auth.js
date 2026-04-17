@@ -567,6 +567,7 @@ router.post('/register', registerValidation, handleValidationErrors, async (req,
     const finalUpi = upi_id?.trim() || `${phone}@upi`;
 
     const worker = await Worker.create({
+      _id: crypto.randomUUID(),
       phone: phone.trim(),
       password_hash,
       name: name.trim(),
@@ -589,24 +590,26 @@ router.post('/register', registerValidation, handleValidationErrors, async (req,
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
 
     await OtpVerification.create({
+      _id: crypto.randomUUID(),
       phone: phone.trim(),
       otp_hash: otpHash,
       expires_at: otpExpiry
     });
 
     const accessToken = generateToken({
-      id: worker.id, phone: worker.phone, role: 'worker', zone_id: worker.zone_id,
+      id: worker._id, phone: worker.phone, role: 'worker', zone_id: worker.zone_id,
     });
     const { token: refreshToken, hash: refreshHash } = generateRefreshToken();
 
     await RefreshToken.create({
-      worker_id: worker.id,
+      _id: crypto.randomUUID(),
+      worker_id: worker._id,
       token_hash: refreshHash,
       expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     });
 
     await enhancedAuditLog('REGISTER_SUCCESS', { 
-      worker_id: worker.id, ip, ua, success: true,
+      worker_id: worker._id, ip, ua, success: true,
       deviceHash, riskScore: suspiciousActivity.riskScore,
       additionalData: { 
         isNewDevice: true,

@@ -37,7 +37,22 @@ app.use(helmet({
   hsts: { maxAge: 31536000, includeSubDomains: true },
 }));
 app.use(cors({
-  origin: appConfig.server.clientUrl,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      appConfig.server.clientUrl,
+      'https://safeshift-team-mj5.vercel.app',
+      'https://safeshift-team-mj5-fiue2hre4-ssomasekhar018s-projects.vercel.app'
+    ];
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
 app.use(express.json({ limit: '10mb' }));

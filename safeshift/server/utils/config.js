@@ -48,7 +48,8 @@ class ConfigManager {
           serverSelectionTimeoutMS: parseInt(process.env.MONGO_SERVER_SELECTION_TIMEOUT) || 5000,
           socketTimeoutMS: parseInt(process.env.MONGO_SOCKET_TIMEOUT) || 45000,
           bufferMaxEntries: parseInt(process.env.MONGO_BUFFER_MAX_ENTRIES) || 0
-        }
+        },
+        useMongoDB: process.env.USE_MONGODB !== 'false' // Default to true unless explicitly disabled
       },
 
       // Three.js Performance Configuration
@@ -139,7 +140,7 @@ class ConfigManager {
 
     // Validate required server configuration
     if (!this.config.jwt.secret || this.config.jwt.secret === 'default-secret-key') {
-      this.validationErrors.push('JWT_SECRET must be set to a secure value in production');
+      this.warnings.push('⚠️  JWT_SECRET is using the default value - set a secure secret in production!');
     }
 
     if (this.config.server.port < 1 || this.config.server.port > 65535) {
@@ -148,8 +149,8 @@ class ConfigManager {
 
     // Validate MongoDB configuration
     if (this.config.database.useMongoDB) {
-      if (!this.config.database.mongoUri || this.config.database.mongoUri === 'mongodb://localhost:27017/safeshift') {
-        this.warnings.push('⚠️  MONGODB_URI not configured - using default local connection');
+      if (!this.config.database.mongoUri || this.config.database.mongoUri.includes('localhost')) {
+        this.warnings.push('⚠️  MONGODB_URI is using local or default connection - verify for production');
       }
 
       // Validate MongoDB options

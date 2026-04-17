@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Shield, MapPin, CreditCard, Activity, CheckCircle, AlertTriangle } from 'lucide-react';
 import { useGlassmorphism } from '../hooks/useGlassmorphism';
 import { api } from '../services/api';
 
 export default function ConsentScreen({ onConsentGiven, user }) {
   const { getGlassClass } = useGlassmorphism();
+  const navigate = useNavigate();
   const [consents, setConsents] = useState({
     gps_location: false,
     bank_upi: false,

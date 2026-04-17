@@ -501,10 +501,10 @@ router.post('/admin/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials. Please try again.' });
     }
 
-    const token = generateToken({ id: admin.id, phone: admin.phone, role: 'admin' });
+    const token = generateToken({ id: admin._id, phone: admin.phone, role: 'admin' });
     
     await enhancedAuditLog('ADMIN_LOGIN_SUCCESS', { 
-      worker_id: admin.id, ip, ua, success: true,
+      worker_id: admin._id, ip, ua, success: true,
       deviceHash, riskScore: suspiciousActivity.riskScore,
       additionalData: { 
         adminLogin: true,

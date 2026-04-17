@@ -90,9 +90,9 @@ export default function AdminDashboard({ user, onLogout }) {
   }
 
   return (
-    <div className={`min-h-screen pb-12 transition-colors duration-300 ${getGlassClass('glass-bg')}`} style={{ backgroundColor: 'var(--bg-base)' }}>
+    <div className={`min-h-screen pb-12 transition-colors duration-300 ${getGlassClass('glass-bg')}`}>
       {/* ─── ADMIN HEADER ─── */}
-      <header className={`sticky top-0 z-50 px-6 h-20 flex items-center justify-between ${getGlassClass('glass-card')}`} style={{ borderRadius: 0 }}>
+      <header className={`sticky top-0 z-50 px-6 h-20 flex items-center justify-between border-b ${getGlassClass('glass-card')}`} style={{ borderRadius: 0, borderColor: 'var(--border)' }}>
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-purple-600 flex items-center justify-center text-white shadow-lg shadow-purple-500/20">
             <Shield size={24} />
@@ -106,7 +106,7 @@ export default function AdminDashboard({ user, onLogout }) {
         <div className="flex items-center gap-4">
           <ThemeToggle />
           <div className="h-8 w-[1px] bg-[var(--border)]" />
-          <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10">
+          <div className="flex items-center gap-3 px-3 py-1.5 rounded-xl border" style={{ backgroundColor: 'var(--bg-overlay)', borderColor: 'var(--border)' }}>
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center text-xs font-bold text-white">
               {user?.name?.[0] || 'A'}
             </div>

@@ -567,6 +567,6 @@ html[data-theme='light'] .glass-bg::before {
 }
 
 /* Force standard password masking for all browsers */
-.auth-password-input {
+input[type="password"].auth-password-input {
   -webkit-text-security: disc !important;
 }

@@ -22,6 +22,23 @@ const {
 // MongoDB models - will be initialized after connection
 let Worker, RefreshToken, OtpVerification, AuthAuditLog, Admin;
 
+// Initialize models before each request
+router.use(async (req, res, next) => {
+  try {
+    await connectMongoDB();
+    const models = getModels();
+    Worker = models.Worker;
+    RefreshToken = models.RefreshToken;
+    OtpVerification = models.OtpVerification;
+    AuthAuditLog = models.AuthAuditLog;
+    Admin = models.Admin;
+    next();
+  } catch (err) {
+    console.error('[AUTH] Failed to initialize MongoDB models:', err.message);
+    next(err);
+  }
+});
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 // Pre-computed dummy hash to prevent timing attacks (user enumeration)
@@ -830,24 +847,5 @@ router.post('/consent', authenticate, async (req, res) => {
     return res.status(500).json({ error: 'Failed to save consent' });
   }
 });
-
-// Initialize MongoDB models on router load
-async function initializeModels() {
-  try {
-    await connectMongoDB();
-    const models = getModels();
-    Worker = models.Worker;
-    RefreshToken = models.RefreshToken;
-    OtpVerification = models.OtpVerification;
-    AuthAuditLog = models.AuthAuditLog;
-    Admin = models.Admin;
-    console.log('[AUTH] MongoDB models initialized');
-  } catch (err) {
-    console.error('[AUTH] Failed to initialize MongoDB models:', err.message);
-  }
-}
-
-// Initialize on module load
-initializeModels();
 
 module.exports = router;

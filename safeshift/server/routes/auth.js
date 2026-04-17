@@ -556,6 +556,44 @@ router.post('/admin/login', async (req, res) => {
   }
 });
 
+// ─── POST /api/auth/consent ───────────────────────────────────────────────────
+
+router.post('/consent', authenticate, async (req, res) => {
+  try {
+    const { consents, timestamp } = req.body;
+    const workerId = req.user.id;
+
+    if (!consents || typeof consents !== 'object') {
+      return res.status(400).json({ error: 'Invalid consent data.' });
+    }
+
+    // Update worker record with consent details
+    const updatedWorker = await Worker.findByIdAndUpdate(
+      workerId,
+      {
+        consent_given: true,
+        consent_timestamp: timestamp ? new Date(timestamp) : new Date(),
+        consent_details: {
+          gps_location: Boolean(consents.gps_location),
+          bank_upi: Boolean(consents.bank_upi),
+          platform_activity: Boolean(consents.platform_activity),
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedWorker) {
+      return res.status(404).json({ error: 'Worker not found.' });
+    }
+
+    console.log(`[AUTH] Consent saved for worker ${workerId}`);
+    return res.json({ success: true, message: 'Consent recorded successfully.' });
+  } catch (err) {
+    console.error('[AUTH] Consent route error:', err);
+    return res.status(500).json({ error: 'Failed to save consent. Please try again.' });
+  }
+});
+
 // ─── POST /api/auth/register ──────────────────────────────────────────────────
 
 router.post('/register', registerValidation, handleValidationErrors, async (req, res) => {
